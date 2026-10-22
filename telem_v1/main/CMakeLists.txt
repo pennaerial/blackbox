@@ -1,9 +1,11 @@
 idf_component_register(
     SRCS
-        "main.cpp"
-        "gyro.cpp"
-        "airspeed.cpp"
-        "bme680.cpp"
-        "sdcard.cpp"
+        "main.c"
+        "gyro.c"
+        "airspeed.c"
+        "bme680.c"
+        "sdcard.c"
     INCLUDE_DIRS "."
+    REQUIRES esp_driver_i2c
+    PRIV_REQUIRES esp_driver_spi esp_driver_sdspi fatfs sdmmc esp_timer esp_rom bme68x
 )

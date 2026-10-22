@@ -1,8 +1,10 @@
 #ifndef V1_SDCARD_H
 #define V1_SDCARD_H
 
+#include <stdbool.h>
+
 bool sdSetup(void);
-// Call only after sdSetup() succeeds.
-void sdLogLine(const char *line);
+// Returns false on a write/sync error; the caller should stop logging to SD.
+bool sdLogLine(const char *line);
 
 #endif /* V1_SDCARD_H */

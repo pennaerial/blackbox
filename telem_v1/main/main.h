@@ -1,8 +1,7 @@
 #ifndef V1_MAIN_H
 #define V1_MAIN_H
 
-// Arduino startup and repeating application loop.
-void setup(void);
-void loop(void);
+// ESP-IDF application entry point.
+void app_main(void);
 
 #endif /* V1_MAIN_H */

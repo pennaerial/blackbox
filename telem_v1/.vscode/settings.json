@@ -32,5 +32,7 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\KarpT\\penn-air\\blackbox\\telem_v1\\build"
   ],
-  "terminal.integrated.stickyScroll.enabled": false
+  "terminal.integrated.stickyScroll.enabled": false,
+  "idf.flashType": "UART",
+  "idf.port": "COM7"
 }

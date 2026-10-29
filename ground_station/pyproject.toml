@@ -1,0 +1,12 @@
+[project]
+name = "blackbox-ground-station"
+version = "0.1.0"
+description = "Live dashboard for the black box logger's serial CSV output."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pyopengl",
+    "pyqtgraph",
+    "pyserial",
+    "pyside6",
+]

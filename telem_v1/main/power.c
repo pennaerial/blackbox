@@ -12,14 +12,14 @@
 // Used only when the chip has no Vref burned into eFuse.
 #define DEFAULT_VREF_MV 1100
 
-// Voltage calibration, measured on the ESP32-C6; re-check on the ESP32.
+// Voltage calibration, measured on the ESP32; re-check on other targets.
 // Actual battery: 14.96 V
 // Previous reading: 8.34 V
 // Previous scaling factor: 10.0
 #define VOLTAGE_DIVIDER_RATIO 17.93f
 
 // Current scale: 15 raw ADC counts = 2.2 A, assuming 0 counts = 0 A.
-// Raw counts were measured on the ESP32-C6 ADC and must be re-measured on the ESP32.
+// Raw counts were measured on the ESP32 ADC and must be re-measured on other targets.
 #define CURRENT_AMPS_PER_ADC (2.2f / 15.0f)
 
 static const char *TAG = "power";
@@ -37,18 +37,31 @@ bool powerSetup(void)
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_12,
     };
-    // The ESP32 supports only line-fitting calibration, shared by every channel on the unit.
+
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
     adc_cali_line_fitting_config_t cali_config = {
         .unit_id = ADC_UNIT_1,
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_12,
         .default_vref = DEFAULT_VREF_MV,
     };
+#else
+    adc_cali_curve_fitting_config_t cali_config = {
+        .unit_id = ADC_UNIT_1,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+        .default_vref = DEFAULT_VREF_MV,
+    };
+#endif
 
     esp_err_t err = adc_oneshot_new_unit(&init_config, &adc_handle);
     if (err == ESP_OK) err = adc_oneshot_config_channel(adc_handle, CURRENT_CHANNEL, &channel_config);
     if (err == ESP_OK) err = adc_oneshot_config_channel(adc_handle, VOLTAGE_CHANNEL, &channel_config);
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
     if (err == ESP_OK) err = adc_cali_create_scheme_line_fitting(&cali_config, &cali_handle);
+#else
+    if (err == ESP_OK) err = adc_cali_create_scheme_curve_fitting(&cali_config, &cali_handle);
+#endif
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "ADC setup failed: %s", esp_err_to_name(err));
         if (adc_handle != NULL) adc_oneshot_del_unit(adc_handle);

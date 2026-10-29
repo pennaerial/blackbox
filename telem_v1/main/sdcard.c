@@ -32,7 +32,7 @@ bool sdSetup(void)
     if (logFile != NULL) return true;
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.max_freq_khz = 20000;
+    host.max_freq_khz = 4000;
     spi_bus_config_t bus_config = {
         .mosi_io_num = SPI_MOSI,
         .miso_io_num = SPI_MISO,

@@ -6,6 +6,8 @@
 
 // BME680 environmental sensor, using an initialized shared I2C bus.
 bool bmeSetup(i2c_master_bus_handle_t bus);
+// Non-blocking: returns the measurement started by the previous call (or by bmeSetup) and
+// starts the next one, so call it less often than once per measurement time (a few ms).
 bool bmeRead(float *alt_m, float *press_hpa, float *temp_c, float *hum_pct);
 
 #endif /* V1_BME680_H */

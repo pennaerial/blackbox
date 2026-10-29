@@ -45,14 +45,23 @@ static void sensorDelay(uint32_t period_us, void *context)
     }
 }
 
-static bool performReading(struct bme68x_data *data)
+static bool startReading(void)
 {
-    if (bme == NULL || bme68x_set_op_mode(BME68X_FORCED_MODE, &sensor) != BME68X_OK) return false;
-    sensorDelay(bme68x_get_meas_dur(BME68X_FORCED_MODE, &settings, &sensor), NULL);
+    return bme != NULL && bme68x_set_op_mode(BME68X_FORCED_MODE, &sensor) == BME68X_OK;
+}
 
+static bool collectReading(struct bme68x_data *data)
+{
     uint8_t count = 0;
     return bme68x_get_data(BME68X_FORCED_MODE, data, &count, &sensor) == BME68X_OK &&
            count > 0 && (data->status & BME68X_NEW_DATA_MSK);
+}
+
+static bool performReading(struct bme68x_data *data)
+{
+    if (!startReading()) return false;
+    sensorDelay(bme68x_get_meas_dur(BME68X_FORCED_MODE, &settings, &sensor), NULL);
+    return collectReading(data);
 }
 
 bool bmeSetup(i2c_master_bus_handle_t bus)
@@ -65,7 +74,7 @@ bool bmeSetup(i2c_master_bus_handle_t bus)
         i2c_device_config_t config = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
             .device_address = addrs[i],
-            .scl_speed_hz = 100000,
+            .scl_speed_hz = 400000,
         };
         if (i2c_master_bus_add_device(bus, &config, &bme) != ESP_OK) return false;
 
@@ -101,6 +110,7 @@ bool bmeSetup(i2c_master_bus_handle_t bus)
 
     baseline_hpa = data.pressure / 100.0f;
     ESP_LOGI(TAG, "Altitude zero set. Baseline: %.2f hPa", baseline_hpa);
+    startReading();                             // The first bmeRead() collects this one.
     return true;
 
 fail:
@@ -111,8 +121,14 @@ fail:
 
 bool bmeRead(float *alt_m, float *press_hpa, float *temp_c, float *hum_pct)
 {
+    if (baseline_hpa <= 0) return false;
+
+    // Collect the measurement started last call, then start the next so it runs in the
+    // background while the other sensors are read.
     struct bme68x_data data;
-    if (baseline_hpa <= 0 || !performReading(&data)) return false;
+    bool ok = collectReading(&data);
+    startReading();
+    if (!ok) return false;
 
     *press_hpa = data.pressure / 100.0f;
     *temp_c = data.temperature;

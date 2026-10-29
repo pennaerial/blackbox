@@ -8,10 +8,13 @@ is included under `components/bme68x/` for sensor compensation.
 The matching `.c`/`.h` pairs in `main/` handle:
 
 - `gyro`: LSM6DSO gyroscope and accelerometer, probing 0x6B then 0x6A.
-- `airspeed`: MS4525DO at 0x28, startup zero calibration and filtered airspeed.
+- `airspeed`: MS4525DO at 0x28, startup zero calibration and filtered,
+  wind-tunnel-calibrated airspeed.
 - `bme680`: temperature, humidity, pressure and altitude relative to startup,
   probing 0x77 then 0x76. Altitude uses the same pressure sample as the CSV row.
 - `sdcard`: FAT-formatted SD card over SPI, CSV file creation and periodic sync.
+- `power`: battery voltage (GPIO0) and current (GPIO1) on ADC1. Not yet called
+  by the logger or written to the CSV; its current calibration is provisional.
 
 ## Wiring and behavior
 
@@ -26,14 +29,27 @@ Pin numbers and sensor settings are preserved from the original logger source:
 | SD SCLK | 18 |
 | SD CS | 5 |
 
-I2C runs at 100 kHz and the SD SPI maximum is 20 MHz. These assignments still
-need checking against the physical board and wiring before hardware testing.
-Keep the pitot covered and the board still during startup calibration.
+I2C runs at 400 kHz and the SD SPI maximum is 4 MHz, matching the updated Arduino
+logger. If a sensor is unreliable, drop the I2C devices back to 100 kHz. These
+assignments still need checking against the physical board and wiring before
+hardware testing.
 
-The existing airspeed conversion assumes a -1 to +1 psi sensor, applies a 0.2
-low-pass filter, and calculates density using 101325 Pa and pitot temperature.
+During startup keep the board still, and leave the pitot open but out of any
+draft. Do not cover it: that creates a pressure transient, not a true zero. The
+calibration log reports the zero offset and its noise, and warns above 1.5 Pa rms.
+
+The airspeed conversion assumes a -1 to +1 psi sensor. Each loop averages up to
+8 fresh readings within 8 ms, then applies a 0.25 low-pass filter. The filtered
+value is mapped through the PennAiR wind-tunnel calibration table in `airspeed.c`,
+reduced by a 1.5 Pa soft deadband, and converted using air density from the
+BME680 pressure (101325 Pa if unavailable) and the pitot temperature. After 10 s
+within 4 Pa of zero, the zero offset slowly re-adjusts to cancel drift. The
+`dp_pa` column is the filtered value before the calibration table. Redo the
+wind-tunnel sweep if the probe, tubing or mounting changes.
+
 The IMU keeps the original 104 Hz, +/-2 g and 250 degrees/s settings. The BME680
-uses 1x oversampling, filter coefficient 3 and no gas heater.
+uses 1x oversampling, filter coefficient 3 and no gas heater. Its readings are
+non-blocking: each row reports the measurement started on the previous loop.
 
 The logger has a nominal 50 ms period. Actual throughput depends on sensor and
 SD I/O latency. Missing or failed sensor readings are written as `nan`.

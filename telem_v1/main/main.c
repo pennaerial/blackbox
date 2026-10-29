@@ -1,102 +1,85 @@
+/*
+ * ESP32-C6 logger: BME680, MS4525DO, LSM6DSO, and an SPI SD card.
+ * Existing wiring: I2C SDA=21, SCL=22; SD MOSI=23, MISO=19, SCLK=18, CS=5.
+ * During startup keep the board still, and leave the pitot OPEN but out of any draft.
+ * Covering it creates a pressure transient, not a true zero.
+ */
 
+#include "main.h"
+#include "gyro.h"
+#include "airspeed.h"
+#include "bme680.h"
+#include "sdcard.h"
+
+#include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
+#include "driver/i2c_master.h"
+#include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
-#include "esp_err.h"
 
-// ESP32-C6 ADC channels
-#define CURRENT_CHANNEL ADC_CHANNEL_1  // GPIO1
-#define VOLTAGE_CHANNEL ADC_CHANNEL_0  // GPIO0
+#define SDA_PIN GPIO_NUM_21
+#define SCL_PIN GPIO_NUM_22
+#define LOOP_MS 50                  // Nominal 20 Hz logging.
 
-// Voltage calibration
-// Actual battery: 14.96 V
-// Previous reading: 8.34 V
-// Previous scaling factor: 10.0
-#define VOLTAGE_DIVIDER_RATIO 17.93f
-
-// Current scale: 15 raw ADC counts = 2.2 A, assuming 0 counts = 0 A.
-#define CURRENT_AMPS_PER_ADC (2.2f / 15.0f)
+static const char *TAG = "logger";
 
 void app_main(void)
 {
-    adc_oneshot_unit_handle_t adc_handle;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGI(TAG, "ESP32 logger starting...");
 
-    adc_oneshot_unit_init_cfg_t init_config = {
-        .unit_id = ADC_UNIT_1,
+    i2c_master_bus_config_t bus_config = {
+        .i2c_port = I2C_NUM_0,
+        .sda_io_num = SDA_PIN,
+        .scl_io_num = SCL_PIN,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
+    i2c_master_bus_handle_t bus = NULL;
+    esp_err_t err = i2c_new_master_bus(&bus_config, &bus);
+    bool bmeOk = false;
+    bool imuOk = false;
+    bool airspeedOk = false;
+    if (err == ESP_OK) {
+        bmeOk = bmeSetup(bus);
+        if (!bmeOk) ESP_LOGW(TAG, "BME680 NOT found (check wiring / address)");
 
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(
-        &init_config, &adc_handle
-    ));
+        imuOk = imuSetup(bus);
+        if (!imuOk) ESP_LOGW(TAG, "IMU NOT set up");
 
-    adc_oneshot_chan_cfg_t channel_config = {
-        .atten = ADC_ATTEN_DB_12,
-        .bitwidth = ADC_BITWIDTH_12,
-    };
+        airspeedOk = airspeedSetup(bus);
+        if (airspeedOk) calibrateAirspeed();
+    } else {
+        ESP_LOGE(TAG, "I2C setup failed: %s; sensor fields will be NaN", esp_err_to_name(err));
+    }
 
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(
-        adc_handle, CURRENT_CHANNEL, &channel_config
-    ));
+    bool sdOk = sdSetup();
+    if (!sdOk) ESP_LOGW(TAG, "SD card NOT available (logging to console only)");
 
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(
-        adc_handle, VOLTAGE_CHANNEL, &channel_config
-    ));
+    TickType_t lastLoop = xTaskGetTickCount();
+    for (;;) {
+        xTaskDelayUntil(&lastLoop, pdMS_TO_TICKS(LOOP_MS));
 
-    // Initialize ADC calibration
-    adc_cali_handle_t cali_handle;
+        float alt = NAN, press = NAN, bmeT = NAN, hum = NAN;
+        if (bmeOk) bmeRead(&alt, &press, &bmeT, &hum);
 
-    adc_cali_curve_fitting_config_t cali_config = {
-        .unit_id = ADC_UNIT_1,
-        .chan = CURRENT_CHANNEL,
-        .atten = ADC_ATTEN_DB_12,
-        .bitwidth = ADC_BITWIDTH_12,
-    };
+        float dp = NAN, pitotT = NAN, v = NAN;
+        if (airspeedOk) readAirspeed(press, &dp, &pitotT, &v);
 
-    ESP_ERROR_CHECK(adc_cali_create_scheme_curve_fitting(
-        &cali_config, &cali_handle
-    ));
+        float ax = NAN, ay = NAN, az = NAN, gx = NAN, gy = NAN, gz = NAN;
+        if (imuOk) imuRead(&ax, &ay, &az, &gx, &gy, &gz);
 
-    while (1) {
-        int currentRaw = 0;
-        int voltageRaw = 0;
+        char line[220];
+        snprintf(line, sizeof(line),
+                 "%" PRIu64 ",%.2f,%.2f,%.2f,%.1f,%.2f,%.1f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f",
+                 (uint64_t)(esp_timer_get_time() / 1000), alt, press, bmeT, hum, dp, pitotT, v,
+                 ax, ay, az, gx, gy, gz);
+        puts(line);
 
-        int voltageMilliVolts = 0;
-
-        // Read ADC channels
-        ESP_ERROR_CHECK(adc_oneshot_read(
-            adc_handle, CURRENT_CHANNEL, &currentRaw
-        ));
-
-        ESP_ERROR_CHECK(adc_oneshot_read(
-            adc_handle, VOLTAGE_CHANNEL, &voltageRaw
-        ));
-
-        // Convert the voltage ADC reading to millivolts
-        ESP_ERROR_CHECK(adc_cali_raw_to_voltage(
-            cali_handle, voltageRaw, &voltageMilliVolts
-        ));
-
-        // Convert millivolts to volts
-        float voltageSignal = voltageMilliVolts / 1000.0f;
-
-        // Calculate actual battery voltage
-        float batteryVoltage =
-            voltageSignal * VOLTAGE_DIVIDER_RATIO;
-
-        // Scale raw ADC counts directly using the current calibration.
-        float batteryCurrent = currentRaw * CURRENT_AMPS_PER_ADC;
-
-        // Print measurements
-
-        printf("Battery Voltage: %.2f V\n", batteryVoltage);
-        printf("Battery Current: %.2f A\n", batteryCurrent);
-        printf("Current ADC: %d | Voltage ADC: %d\n",
-               currentRaw, voltageRaw);
-        printf("-------------------------\n");
-
-        vTaskDelay(pdMS_TO_TICKS(500));
+        if (sdOk) sdOk = sdLogLine(line);
     }
 }

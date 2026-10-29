@@ -22,7 +22,7 @@
   "idf.openOcdConfigs": [
     "board/esp32-wrover-kit-3.3v.cfg"
   ],
-  "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf",
+  "idf.currentSetup": "/Users/mlee/.espressif/v6.1/esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32"
   },
@@ -34,5 +34,9 @@
   ],
   "terminal.integrated.stickyScroll.enabled": false,
   "idf.flashType": "UART",
+<<<<<<< Updated upstream
   "idf.port": "COM6"
+=======
+  "idf.port": "/dev/tty.usbserial-110"
+>>>>>>> Stashed changes
 }

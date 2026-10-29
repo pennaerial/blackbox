@@ -1,5 +1,12 @@
 {
+<<<<<<< Updated upstream
   "cmake.sourceDirectory": "C:/Users/aj7zh/Documents/ChatGPT/PennAIR Electrical/blackbox/telem_v1",
   "terminal.integrated.stickyScroll.enabled": false,
   "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf"
+=======
+    "cmake.sourceDirectory": "C:/Users/aj7zh/Documents/ChatGPT/PennAIR Electrical/blackbox/telem_v1",
+    "terminal.integrated.stickyScroll.enabled": false,
+    "idf.currentSetup": "/Users/mlee/.espressif/v6.1/esp-idf",
+    "idf.port": "/dev/tty.usbserial-110"
+>>>>>>> Stashed changes
 }

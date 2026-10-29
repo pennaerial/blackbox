@@ -1,4 +1,5 @@
 {
-    "cmake.sourceDirectory": "C:/Users/aj7zh/Documents/ChatGPT/PennAIR Electrical/blackbox/telem_v1",
-    "terminal.integrated.stickyScroll.enabled": false
+  "cmake.sourceDirectory": "C:/Users/aj7zh/Documents/ChatGPT/PennAIR Electrical/blackbox/telem_v1",
+  "terminal.integrated.stickyScroll.enabled": false,
+  "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf"
 }

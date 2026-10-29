@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 
-// Battery voltage (GPIO0) and current (GPIO1) from the power module on ADC1.
+// Battery voltage (GPIO34) and current (GPIO35) from the power module on ADC1.
 // Calibration is provisional; see the constants in power.c.
 bool powerSetup(void);
 bool powerRead(float *voltage_v, float *current_a, int *voltage_raw, int *current_raw);

@@ -1,6 +1,6 @@
 # Telemetry logger firmware
 
-Native ESP-IDF firmware for the ESP32-C6, using ESP-IDF 6.1. The application is
+Native ESP-IDF firmware for the ESP32, using ESP-IDF 6.1. The application is
 C, with no Arduino or Adafruit dependency. Bosch's BSD-licensed BME68x C driver
 is included under `components/bme68x/` for sensor compensation.
 
@@ -13,8 +13,9 @@ The matching `.c`/`.h` pairs in `main/` handle:
 - `bme680`: temperature, humidity, pressure and altitude relative to startup,
   probing 0x77 then 0x76. Altitude uses the same pressure sample as the CSV row.
 - `sdcard`: FAT-formatted SD card over SPI, CSV file creation and periodic sync.
-- `power`: battery voltage (GPIO0) and current (GPIO1) on ADC1. Not yet called
-  by the logger or written to the CSV; its current calibration is provisional.
+- `power`: battery voltage (GPIO34) and current (GPIO35) on ADC1. Not yet called
+  by the logger or written to the CSV. Its calibration was measured on the
+  ESP32-C6 and must be redone on the ESP32.
 
 ## Wiring and behavior
 
@@ -64,7 +65,7 @@ formatting, and write/sync failures stop SD logging while console output continu
 In an activated ESP-IDF 6.1 terminal, from `telem_v1/`, select the target once:
 
 ```text
-idf.py set-target esp32c6
+idf.py set-target esp32
 idf.py build
 ```
 

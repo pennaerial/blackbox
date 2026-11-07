@@ -1,6 +1,6 @@
 /*
  * ESP32 logger: BME680, MS4525DO, LSM6DSO, and an SPI SD card.
- * Existing wiring: I2C SDA=21, SCL=22; SD MOSI=23, MISO=19, SCLK=18, CS=5.
+ * Pin assignments are in pins.h.
  * During startup keep the board still, and leave the pitot OPEN but out of any draft.
  * Covering it creates a pressure transient, not a true zero.
  */
@@ -10,6 +10,7 @@
 #include "airspeed.h"
 #include "bme680.h"
 #include "sdcard.h"
+#include "pins.h"
 
 #include <inttypes.h>
 #include <math.h>
@@ -20,8 +21,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define SDA_PIN GPIO_NUM_21
-#define SCL_PIN GPIO_NUM_22
 #define LOOP_MS 50                  // Nominal 20 Hz logging.
 
 static const char *TAG = "logger";
@@ -33,8 +32,8 @@ void app_main(void)
 
     i2c_master_bus_config_t bus_config = {
         .i2c_port = I2C_NUM_0,
-        .sda_io_num = SDA_PIN,
-        .scl_io_num = SCL_PIN,
+        .sda_io_num = PIN_I2C_SDA,
+        .scl_io_num = PIN_I2C_SCL,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,

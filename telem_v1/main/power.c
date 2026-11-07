@@ -1,4 +1,5 @@
 #include "power.h"
+#include "pins.h"
 
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
@@ -6,9 +7,11 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
-// ESP32-C6 ADC1 pins: GPIO1 = channel 1, GPIO0 = channel 0.
-#define VOLTAGE_PIN 1
-#define CURRENT_PIN 0
+// ADC1 pins come from pins.h; the channel is looked up from the GPIO at setup.
+#define VOLTAGE_PIN PIN_POWER_VOLTAGE
+#define CURRENT_PIN PIN_POWER_CURRENT
+
+// Calibration was measured on the ESP32-C6 bench wiring; re-check it on the ESP32.
 
 #define VOLTAGE_DIVIDER_RATIO 10.11f
 #define CURRENT_AMPS_PER_VOLT 36.364f
@@ -75,7 +78,7 @@ bool powerSetup(void)
     esp_err_t err = adc_oneshot_io_to_channel(VOLTAGE_PIN, &voltage_unit, &voltage_channel);
     if (err == ESP_OK) err = adc_oneshot_io_to_channel(CURRENT_PIN, &current_unit, &current_channel);
     if (err != ESP_OK || voltage_unit != ADC_UNIT_1 || current_unit != ADC_UNIT_1) {
-        ESP_LOGE(TAG, "GPIO%d and GPIO%d must both be ADC1 pins; select the ESP32-C6 target",
+        ESP_LOGE(TAG, "GPIO%d and GPIO%d must both be ADC1 pins; check pins.h",
                  VOLTAGE_PIN, CURRENT_PIN);
         return false;
     }

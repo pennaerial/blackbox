@@ -1,4 +1,5 @@
 #include "sdcard.h"
+#include "pins.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -11,10 +12,6 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 
-#define SPI_MOSI 23
-#define SPI_MISO 19
-#define SPI_SCLK 18
-#define SD_CS 5
 #define MOUNT_POINT "/sdcard"
 
 static const char *TAG = "sdcard";
@@ -34,9 +31,9 @@ bool sdSetup(void)
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.max_freq_khz = 4000;
     spi_bus_config_t bus_config = {
-        .mosi_io_num = SPI_MOSI,
-        .miso_io_num = SPI_MISO,
-        .sclk_io_num = SPI_SCLK,
+        .mosi_io_num = PIN_SD_MOSI,
+        .miso_io_num = PIN_SD_MISO,
+        .sclk_io_num = PIN_SD_SCLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
@@ -48,7 +45,7 @@ bool sdSetup(void)
     }
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = SD_CS;
+    slot_config.gpio_cs = PIN_SD_CS;
     slot_config.host_id = host.slot;
     esp_vfs_fat_mount_config_t mount_config = {
         .format_if_mount_failed = false,

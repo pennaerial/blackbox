@@ -7,7 +7,7 @@
 #define POWER_PRINT_INTERVAL_MS 500
 #define POWER_WINDOW_SIZE 50
 
-// ESP32-C6: battery voltage on GPIO1, current on GPIO0 (ADC1, 12 bits).
+// Battery voltage and current on the ADC1 pins set in pins.h (12 bits).
 // Call setup once, then use the read functions from a single task.
 bool powerSetup(void);
 

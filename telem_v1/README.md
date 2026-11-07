@@ -13,17 +13,18 @@ The matching `.c`/`.h` pairs in `main/` handle:
 - `bme680`: temperature, humidity, pressure and altitude relative to startup,
   probing 0x77 then 0x76. Altitude uses the same pressure sample as the CSV row.
 - `sdcard`: FAT-formatted SD card over SPI, CSV file creation and periodic sync.
-- `power`: ESP32-C6 battery voltage (GPIO1) and current (GPIO0) on ADC1, using
-  calibrated signal volts scaled by 10.11 and 36.364 respectively. `powerRead()`
-  returns instantaneous values; calling `powerReadAverage()` every 100 ms
-  maintains a 50-sample (nominal 5-second) rolling average. Print every 500 ms
-  from the caller if desired. Not yet called by the logger or written to the
-  CSV. These power pins require the C6 target; the other logger wiring below
-  is still for the original ESP32.
+- `power`: battery voltage and current on the ADC1 pins in `pins.h` (GPIO1/GPIO0
+  when built for the ESP32-C6 bench, proposed GPIO34/GPIO35 on the ESP32), using
+  calibrated signal volts scaled by 10.11 and 36.364 respectively. That calibration
+  was measured on the C6. `powerRead()` returns instantaneous values; calling
+  `powerReadAverage()` every 100 ms maintains a 50-sample (nominal 5-second) rolling
+  average. Print every 500 ms from the caller if desired. Not yet called by the
+  logger or written to the CSV.
 
 ## Wiring and behavior
 
-Pin numbers and sensor settings are preserved from the original logger source:
+All GPIO assignments are in `main/pins.h`; change them there only. Pin numbers and
+sensor settings are preserved from the original logger source:
 
 | Signal | GPIO |
 | --- | --- |

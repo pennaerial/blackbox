@@ -34,9 +34,5 @@
   ],
   "terminal.integrated.stickyScroll.enabled": false,
   "idf.flashType": "UART",
-<<<<<<< Updated upstream
   "idf.port": "COM6"
-=======
-  "idf.port": "/dev/tty.usbserial-110"
->>>>>>> Stashed changes
 }

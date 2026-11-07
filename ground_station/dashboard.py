@@ -8,6 +8,8 @@ ESP32 sensor dashboard
 Run from ground_station/:
        uv run dashboard.py            (auto-detects the port)
        uv run dashboard.py COM5       (or pass the port yourself)
+       uv run dashboard.py COM7 --baud 57600
+                                      (through the SiK telemetry radio instead of USB)
        uv run dashboard.py --replay log_007.csv [--speed 2]
                                       (play back an SD card log; bare names are looked up in logs/,
                                        and --replay with no name plays the newest log there)
@@ -35,7 +37,7 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 
 # ======================= Settings =======================
 PORT = None            # None = auto-detect (or pass as command-line argument)
-BAUD = 115200          # must match the firmware console baud (ESP-IDF default)
+BAUD = 115200          # USB console baud (ESP-IDF default); the radio uses 57600 via --baud
 LOG_DIR = Path(__file__).parent / "logs"   # where --replay looks for SD card logs
 HISTORY_S = 20         # seconds of history shown in the plots
 BUF_N = 3000           # samples kept in memory
@@ -241,11 +243,12 @@ class Card(QtWidgets.QFrame):
 
 # ======================= Main window =======================
 class Dashboard(QtWidgets.QMainWindow):
-    def __init__(self, port, replay=None):
+    def __init__(self, port, replay=None, baud=BAUD):
         super().__init__()
         self.setWindowTitle("ESP32 Sensor Dashboard" + (" - replay" if replay else ""))
         self.port = port
         self.replay = replay
+        self.baud = baud
         self.ser = None
         self.rx = bytearray()
         self.buf = np.full((BUF_N, len(COLS)), np.nan)
@@ -427,7 +430,7 @@ class Dashboard(QtWidgets.QMainWindow):
             if now - self.last_open_try > 1.0:
                 self.last_open_try = now
                 try:
-                    self.ser = serial.Serial(self.port, BAUD, timeout=0)
+                    self.ser = serial.Serial(self.port, self.baud, timeout=0)
                     self.rx.clear()
                 except (serial.SerialException, OSError):
                     self.ser = None
@@ -514,7 +517,7 @@ class Dashboard(QtWidgets.QMainWindow):
         elif now - self.last_rx > 1.0:
             msg, receiving = f"{self.port}: connected, no data", False
         else:
-            msg, receiving = f"{self.port} @ {BAUD}   |   {self.rate:.0f} Hz", True
+            msg, receiving = f"{self.port} @ {self.baud}   |   {self.rate:.0f} Hz", True
         if receiving:
             if self.calibrating:
                 msg += "   |   calibrating gyro - keep still"
@@ -564,6 +567,8 @@ class Dashboard(QtWidgets.QMainWindow):
 def main():
     ap = argparse.ArgumentParser(description="Live or replayed black box dashboard.")
     ap.add_argument("port", nargs="?", help="serial port, e.g. COM5 (auto-detected if omitted)")
+    ap.add_argument("--baud", type=int, default=BAUD,
+                    help=f"serial baud (default {BAUD} for USB; 57600 for the SiK radio)")
     ap.add_argument("--replay", nargs="?", const="", metavar="CSV",
                     help="play back an SD card log; a bare name is looked up in logs/, "
                          "no name plays the newest log there")
@@ -578,7 +583,7 @@ def main():
 
     pg.setConfigOptions(antialias=True)
     app = pg.mkQApp("ESP32 Dashboard")
-    win = Dashboard(None if replay else find_port(args.port), replay)
+    win = Dashboard(None if replay else find_port(args.port), replay, args.baud)
     win.resize(1500, 900)
     win.show()
     pg.exec()

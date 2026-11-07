@@ -6,7 +6,8 @@ idf_component_register(
         "bme680.c"
         "sdcard.c"
         "power.c"
+        "wireless.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_i2c
-    PRIV_REQUIRES esp_adc esp_driver_gpio esp_driver_spi esp_driver_sdspi fatfs sdmmc esp_timer esp_rom bme68x
+    PRIV_REQUIRES esp_adc esp_driver_gpio esp_driver_spi esp_driver_uart esp_driver_sdspi fatfs sdmmc esp_timer esp_rom bme68x
 )

@@ -20,6 +20,8 @@ The matching `.c`/`.h` pairs in `main/` handle:
   `powerReadAverage()` every 100 ms maintains a 50-sample (nominal 5-second) rolling
   average. Print every 500 ms from the caller if desired. Not yet called by the
   logger or written to the CSV.
+- `wireless`: sends each CSV row to the SiK telemetry radio on UART1 at 57600 baud
+  (TX/RX pins in `pins.h`, not yet wired). Log messages stay on the USB console.
 
 ## Wiring and behavior
 

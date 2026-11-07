@@ -26,8 +26,7 @@ typedef struct {
 // UART and creates a background TX task for the lifetime of the application.
 // Rejects invalid pins, the configured console UART, and an installed driver.
 // Failed setup releases its driver/queue so it can be retried.
-// Integration later requires wireless.c in SRCS and esp_driver_uart in REQUIRES
-// (or PRIV_REQUIRES). No GPIO assignment is assumed here.
+// main.c calls this with the radio pins from pins.h; no GPIO is assumed here.
 esp_err_t wirelessSetup(const wireless_config_t *config);
 
 // Copy one nonempty CSV/text line without CR/LF into a one-slot pending queue.

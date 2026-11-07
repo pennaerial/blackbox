@@ -28,7 +28,7 @@
 #define PIN_POWER_CURRENT GPIO_NUM_35
 #endif
 
-// SiK telemetry radio UART (wireless.c). Proposed, not yet wired or used by main.c.
+// SiK telemetry radio UART (wireless.c, set up in main.c). Proposed, check before wiring.
 #define PIN_RADIO_TX GPIO_NUM_17  // ESP32 TX -> radio RX
 #define PIN_RADIO_RX GPIO_NUM_16  // ESP32 RX <- radio TX
 

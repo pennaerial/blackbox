@@ -10,6 +10,7 @@
 #include "airspeed.h"
 #include "bme680.h"
 #include "sdcard.h"
+#include "wireless.h"
 #include "pins.h"
 
 #include <inttypes.h>
@@ -22,6 +23,7 @@
 #include "freertos/task.h"
 
 #define LOOP_MS 50                  // Nominal 20 Hz logging.
+#define RADIO_UART UART_NUM_1       // Not the console UART; any pins via pins.h.
 
 static const char *TAG = "logger";
 
@@ -59,6 +61,17 @@ void app_main(void)
     bool sdOk = sdSetup();
     if (!sdOk) ESP_LOGW(TAG, "SD card NOT available (logging to console only)");
 
+    // CSV rows only go to the radio; ESP-IDF log messages stay on the USB console.
+    const wireless_config_t radio_config = {
+        .uart_port = RADIO_UART,
+        .tx_pin = PIN_RADIO_TX,
+        .rx_pin = PIN_RADIO_RX,
+        .baud_rate = WIRELESS_SIK_DEFAULT_BAUD,
+    };
+    err = wirelessSetup(&radio_config);
+    bool radioOk = err == ESP_OK;
+    if (!radioOk) ESP_LOGW(TAG, "Radio UART NOT set up: %s", esp_err_to_name(err));
+
     TickType_t lastLoop = xTaskGetTickCount();
     for (;;) {
         xTaskDelayUntil(&lastLoop, pdMS_TO_TICKS(LOOP_MS));
@@ -78,6 +91,7 @@ void app_main(void)
                  (uint64_t)(esp_timer_get_time() / 1000), alt, press, bmeT, hum, dp, pitotT, v,
                  ax, ay, az, gx, gy, gz);
         puts(line);
+        if (radioOk) wirelessSendLine(line);
 
         if (sdOk) sdOk = sdLogLine(line);
     }

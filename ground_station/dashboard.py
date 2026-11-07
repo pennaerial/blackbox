@@ -8,6 +8,9 @@ ESP32 sensor dashboard
 Run from ground_station/:
        uv run dashboard.py            (auto-detects the port)
        uv run dashboard.py COM5       (or pass the port yourself)
+       uv run dashboard.py --replay log_007.csv [--speed 2]
+                                      (play back an SD card log; bare names are looked up in logs/,
+                                       and --replay with no name plays the newest log there)
 
 Without uv: pip install pyserial pyqtgraph PySide6 PyOpenGL numpy, then python dashboard.py
 
@@ -15,11 +18,13 @@ Expects the ESP32 to print one CSV line per sample (the same `line` that goes to
   t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_pa,pitot_temp_c,airspeed_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps
 Other lines (ESP-IDF log messages) are ignored.
 
-Keys: Z = zero attitude, Y = zero yaw only, G = re-calibrate gyro (hold still)
+Keys: Z = zero attitude, Y = zero yaw only, G = re-calibrate gyro (hold still), R = restart replay
 """
+import argparse
 import math
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import serial
@@ -31,6 +36,7 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 # ======================= Settings =======================
 PORT = None            # None = auto-detect (or pass as command-line argument)
 BAUD = 115200          # must match the firmware console baud (ESP-IDF default)
+LOG_DIR = Path(__file__).parent / "logs"   # where --replay looks for SD card logs
 HISTORY_S = 20         # seconds of history shown in the plots
 BUF_N = 3000           # samples kept in memory
 FRAME_MS = 16          # UI refresh (~60 fps)
@@ -67,9 +73,9 @@ def parse(line: bytes):
         return None
 
 
-def find_port():
-    if len(sys.argv) > 1:
-        return sys.argv[1]
+def find_port(arg=None):
+    if arg:
+        return arg
     if PORT:
         return PORT
     ports = list(serial.tools.list_ports.comports())
@@ -85,6 +91,55 @@ def find_port():
         print(f"  {p.device}  -  {p.description}")
     print("Run again with the port as an argument, e.g.  uv run dashboard.py COM5")
     sys.exit(1)
+
+
+def find_log(name):
+    """A path as given, else the name inside LOG_DIR; no name means the newest log there."""
+    if not name:
+        logs = sorted(LOG_DIR.glob("*.csv"), key=lambda p: p.stat().st_mtime)
+        if not logs:
+            sys.exit(f"No .csv logs in {LOG_DIR}")
+        return logs[-1]
+    path = Path(name)
+    if not path.exists() and (LOG_DIR / path).exists():
+        path = LOG_DIR / path
+    if not path.exists():
+        sys.exit(f"Log not found: {name} (also looked in {LOG_DIR})")
+    return path
+
+
+class Replay:
+    """Plays an SD card log back in real time (times `speed`), paced by its t_ms column."""
+
+    def __init__(self, path, speed=1.0):
+        with open(path, "rb") as f:
+            self.rows = [r for r in map(parse, f) if r is not None]   # header and junk drop out
+        self.name = Path(path).name
+        self.speed = speed
+        self.restart()
+
+    def restart(self):
+        self.i = 0
+        self.start = time.time()
+
+    def due(self):
+        """Rows whose time has come since the last call."""
+        t = self.rows[0][0] + (time.time() - self.start) * self.speed * 1000.0
+        j = self.i
+        while j < len(self.rows) and self.rows[j][0] <= t:
+            j += 1
+        rows, self.i = self.rows[self.i:j], j
+        return rows
+
+    def done(self):
+        return self.i >= len(self.rows)
+
+    def status(self):
+        t0 = self.rows[0][0]
+        now = self.rows[max(self.i - 1, 0)][0] - t0
+        end = self.rows[-1][0] - t0
+        msg = f"Replay {self.name}  x{self.speed:g}   |   {now / 1000:.1f} / {end / 1000:.1f} s"
+        return msg + ("   |   finished (R to restart)" if self.done() else "")
 
 
 def wrap_pi(x):
@@ -186,10 +241,11 @@ class Card(QtWidgets.QFrame):
 
 # ======================= Main window =======================
 class Dashboard(QtWidgets.QMainWindow):
-    def __init__(self, port):
+    def __init__(self, port, replay=None):
         super().__init__()
-        self.setWindowTitle("ESP32 Sensor Dashboard")
+        self.setWindowTitle("ESP32 Sensor Dashboard" + (" - replay" if replay else ""))
         self.port = port
+        self.replay = replay
         self.ser = None
         self.rx = bytearray()
         self.buf = np.full((BUF_N, len(COLS)), np.nan)
@@ -343,6 +399,9 @@ class Dashboard(QtWidgets.QMainWindow):
             self.zero_yaw()
         elif k == "g":
             self.start_cal()
+        elif k == "r" and self.replay is not None:
+            self.reset_state()
+            self.replay.restart()
         else:
             super().keyPressEvent(e)
 
@@ -356,7 +415,10 @@ class Dashboard(QtWidgets.QMainWindow):
 
     # ---------- Data ----------
     def tick(self):
-        self.poll_serial()
+        if self.replay is not None:
+            self.handle_rows(self.replay.due())
+        else:
+            self.poll_serial()
         self.render()
 
     def poll_serial(self):
@@ -386,12 +448,11 @@ class Dashboard(QtWidgets.QMainWindow):
             del self.rx[:-2000]
         *lines, rest = self.rx.split(b"\n")
         self.rx = bytearray(rest)
+        self.handle_rows(r for r in map(parse, lines) if r is not None)
 
+    def handle_rows(self, rows):
         batch = []
-        for ln in lines:
-            row = parse(ln)
-            if row is None:
-                continue
+        for row in rows:
             if self.last_t is not None and row[0] < self.last_t:   # ESP32 rebooted
                 self.push(batch)
                 batch = []
@@ -446,12 +507,15 @@ class Dashboard(QtWidgets.QMainWindow):
         if now - self.rate_t >= 1.0:
             self.rate = self.rate_count / (now - self.rate_t)
             self.rate_count, self.rate_t = 0, now
-        if self.ser is None:
-            msg = f"Waiting for {self.port} ..."
+        if self.replay is not None:
+            msg, receiving = self.replay.status(), not self.replay.done()
+        elif self.ser is None:
+            msg, receiving = f"Waiting for {self.port} ...", False
         elif now - self.last_rx > 1.0:
-            msg = f"{self.port}: connected, no data"
+            msg, receiving = f"{self.port}: connected, no data", False
         else:
-            msg = f"{self.port} @ {BAUD}   |   {self.rate:.0f} Hz"
+            msg, receiving = f"{self.port} @ {BAUD}   |   {self.rate:.0f} Hz", True
+        if receiving:
             if self.calibrating:
                 msg += "   |   calibrating gyro - keep still"
             elif self.still:
@@ -498,9 +562,23 @@ class Dashboard(QtWidgets.QMainWindow):
 
 
 def main():
+    ap = argparse.ArgumentParser(description="Live or replayed black box dashboard.")
+    ap.add_argument("port", nargs="?", help="serial port, e.g. COM5 (auto-detected if omitted)")
+    ap.add_argument("--replay", nargs="?", const="", metavar="CSV",
+                    help="play back an SD card log; a bare name is looked up in logs/, "
+                         "no name plays the newest log there")
+    ap.add_argument("--speed", type=float, default=1.0, help="replay speed multiplier (default 1)")
+    args = ap.parse_args()
+
+    replay = None
+    if args.replay is not None:
+        replay = Replay(find_log(args.replay), args.speed)
+        if not replay.rows:
+            sys.exit(f"No data rows in {replay.name}")
+
     pg.setConfigOptions(antialias=True)
     app = pg.mkQApp("ESP32 Dashboard")
-    win = Dashboard(find_port())
+    win = Dashboard(None if replay else find_port(args.port), replay)
     win.resize(1500, 900)
     win.show()
     pg.exec()

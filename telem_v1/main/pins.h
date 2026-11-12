@@ -29,7 +29,7 @@
 #endif
 
 // SiK telemetry radio UART (wireless.c, set up in main.c). Proposed, check before wiring.
-#define PIN_RADIO_TX GPIO_NUM_17  // ESP32 TX -> radio RX
-#define PIN_RADIO_RX GPIO_NUM_16  // ESP32 RX <- radio TX
+#define PIN_RADIO_TX GPIO_NUM_6  // ESP32 TX -> radio RX
+#define PIN_RADIO_RX GPIO_NUM_7  // ESP32 RX <- radio TX
 
 #endif /* V1_PINS_H */

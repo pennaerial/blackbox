@@ -1,6 +1,6 @@
 # Telemetry logger firmware
 
-Native ESP-IDF firmware for the ESP32, using ESP-IDF 6.1. The application is
+Native ESP-IDF firmware for the ESP32-C6, using ESP-IDF 6.1. The application is
 C, with no Arduino or Adafruit dependency. Bosch's BSD-licensed BME68x C driver
 is included under `components/bme68x/` for sensor compensation.
 
@@ -69,10 +69,29 @@ formatting, and write/sync failures stop SD logging while console output continu
 
 ## Build
 
+In VS Code, open [blackbox.code-workspace](../blackbox.code-workspace) with
+**File > Open Workspace from File**. It keeps `penn-air` as the first workspace
+folder and adds `telem_v1` as the firmware project. Run **ESP-IDF: Pick a Workspace
+Folder** and select `telem_v1` once; the extension normally remembers it on reopen.
+Then use **ESP-IDF: Build Your Project** (Ctrl+E, then B on Windows).
+
+Keep installation paths and serial ports in personal VS Code **User** settings,
+not this repository's `.vscode/settings.json`. The ESP-IDF extension inherits
+`idf.currentSetup` and `idf.port` from there. Choose the ESP32's port when flashing;
+the SiK radio has a separate port. ESP-IDF's setup/port commands may write a new
+folder override, which takes precedence over User settings.
+
+Windows and macOS each build into their own local `build/` directory. It and the
+generated `sdkconfig` / `sdkconfig.old` files are already ignored by Git. Share
+the source and `sdkconfig.defaults`; keep SDK installation paths, serial ports
+and build output on each computer. Use the same ESP-IDF version and target on
+both computers, and put configuration changes intended for everyone in
+`sdkconfig.defaults`.
+
 In an activated ESP-IDF 6.1 terminal, from `telem_v1/`, select the target once:
 
 ```text
-idf.py set-target esp32
+idf.py set-target esp32c6
 idf.py build
 ```
 

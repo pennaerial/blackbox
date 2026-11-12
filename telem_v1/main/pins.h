@@ -12,10 +12,10 @@
 #define PIN_I2C_SCL GPIO_NUM_22
 
 // SD card over SPI.
-#define PIN_SD_MOSI GPIO_NUM_23
-#define PIN_SD_MISO GPIO_NUM_19
-#define PIN_SD_SCLK GPIO_NUM_18
-#define PIN_SD_CS GPIO_NUM_5
+#define PIN_SD_MOSI GPIO_NUM_33
+#define PIN_SD_MISO GPIO_NUM_34 // Input-only on the ESP32, no internal pull-up.
+#define PIN_SD_SCLK GPIO_NUM_32
+#define PIN_SD_CS GPIO_NUM_23
 
 // Power module; both must be ADC1 pins.
 #if CONFIG_IDF_TARGET_ESP32C6
@@ -24,6 +24,7 @@
 #define PIN_POWER_CURRENT GPIO_NUM_0
 #else
 // GPIO0/1 are not ADC1 pins on the ESP32. Proposed, not yet wired.
+// CONFLICT: GPIO34 is now SD MISO; pick another ADC1 pin before calling powerSetup().
 #define PIN_POWER_VOLTAGE GPIO_NUM_34
 #define PIN_POWER_CURRENT GPIO_NUM_35
 #endif

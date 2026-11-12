@@ -32,10 +32,10 @@ sensor settings are preserved from the original logger source:
 | --- | --- |
 | I2C SDA | 21 |
 | I2C SCL | 22 |
-| SD MOSI | 23 |
-| SD MISO | 19 |
-| SD SCLK | 18 |
-| SD CS | 5 |
+| SD MOSI | 33 |
+| SD MISO | 34 |
+| SD SCLK | 32 |
+| SD CS | 23 |
 
 I2C runs at 400 kHz and the SD SPI maximum is 4 MHz, matching the updated Arduino
 logger. If a sensor is unreliable, drop the I2C devices back to 100 kHz. These

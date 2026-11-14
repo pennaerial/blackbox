@@ -68,9 +68,14 @@ void app_main(void)
         .rx_pin = PIN_RADIO_RX,
         .baud_rate = WIRELESS_SIK_DEFAULT_BAUD,
     };
-    err = wirelessSetup(&radio_config);
-    bool radioOk = err == ESP_OK;
-    if (!radioOk) ESP_LOGW(TAG, "Radio UART NOT set up: %s", esp_err_to_name(err));
+    bool radioOk = false;
+    if (PIN_RADIO_TX == GPIO_NUM_NC) {
+        ESP_LOGI(TAG, "Radio disabled (no pins in pins.h)");
+    } else {
+        err = wirelessSetup(&radio_config);
+        radioOk = err == ESP_OK;
+        if (!radioOk) ESP_LOGW(TAG, "Radio UART NOT set up: %s", esp_err_to_name(err));
+    }
 
     TickType_t lastLoop = xTaskGetTickCount();
     for (;;) {

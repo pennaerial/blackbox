@@ -8,8 +8,8 @@
 #include "sdkconfig.h"
 
 // I2C bus: BME680, MS4525DO airspeed, LSM6DSO IMU.
-#define PIN_I2C_SDA GPIO_NUM_21
-#define PIN_I2C_SCL GPIO_NUM_22
+#define PIN_I2C_SDA GPIO_NUM_26
+#define PIN_I2C_SCL GPIO_NUM_27
 
 // SD card over SPI.
 #define PIN_SD_MOSI GPIO_NUM_33
@@ -29,8 +29,9 @@
 #define PIN_POWER_CURRENT GPIO_NUM_35
 #endif
 
-// SiK telemetry radio UART (wireless.c, set up in main.c). Proposed, check before wiring.
-#define PIN_RADIO_TX GPIO_NUM_6  // ESP32 TX -> radio RX
-#define PIN_RADIO_RX GPIO_NUM_7  // ESP32 RX <- radio TX
+// SiK telemetry radio UART (wireless.c, set up in main.c). Not wired: GPIO_NUM_NC skips
+// radio setup. GPIO6-11 drive the ESP32's flash, so never use them here.
+#define PIN_RADIO_TX GPIO_NUM_NC // ESP32 TX -> radio RX
+#define PIN_RADIO_RX GPIO_NUM_NC // ESP32 RX <- radio TX
 
 #endif /* V1_PINS_H */

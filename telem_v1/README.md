@@ -1,6 +1,6 @@
 # Telemetry logger firmware
 
-Native ESP-IDF firmware for the ESP32-C6, using ESP-IDF 6.1. The application is
+Native ESP-IDF firmware for the ESP32, using ESP-IDF 6.1. The application is
 C, with no Arduino or Adafruit dependency. Bosch's BSD-licensed BME68x C driver
 is included under `components/bme68x/` for sensor compensation.
 
@@ -21,7 +21,8 @@ The matching `.c`/`.h` pairs in `main/` handle:
   average. Print every 500 ms from the caller if desired. Not yet called by the
   logger or written to the CSV.
 - `wireless`: sends each CSV row to the SiK telemetry radio on UART1 at 57600 baud
-  (TX/RX pins in `pins.h`, not yet wired). Log messages stay on the USB console.
+  (TX/RX pins in `pins.h`). Not wired: both pins are `GPIO_NUM_NC`, so `main.c`
+  skips radio setup. Log messages stay on the USB console.
 
 ## Wiring and behavior
 
@@ -30,8 +31,8 @@ sensor settings are preserved from the original logger source:
 
 | Signal | GPIO |
 | --- | --- |
-| I2C SDA | 21 |
-| I2C SCL | 22 |
+| I2C SDA | 26 |
+| I2C SCL | 27 |
 | SD MOSI | 33 |
 | SD MISO | 34 |
 | SD SCLK | 32 |
@@ -91,7 +92,7 @@ both computers, and put configuration changes intended for everyone in
 In an activated ESP-IDF 6.1 terminal, from `telem_v1/`, select the target once:
 
 ```text
-idf.py set-target esp32c6
+idf.py set-target esp32
 idf.py build
 ```
 

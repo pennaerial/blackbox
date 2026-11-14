@@ -30,8 +30,8 @@ sensor settings are preserved from the original logger source:
 
 | Signal | GPIO |
 | --- | --- |
-| I2C SDA | 21 |
-| I2C SCL | 22 |
+| I2C SDA | 26 |
+| I2C SCL | 27 |
 | SD MOSI | 33 |
 | SD MISO | 34 |
 | SD SCLK | 32 |

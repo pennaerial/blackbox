@@ -8,8 +8,8 @@
 #include "sdkconfig.h"
 
 // I2C bus: BME680, MS4525DO airspeed, LSM6DSO IMU.
-#define PIN_I2C_SDA GPIO_NUM_21
-#define PIN_I2C_SCL GPIO_NUM_22
+#define PIN_I2C_SDA GPIO_NUM_26
+#define PIN_I2C_SCL GPIO_NUM_27
 
 // SD card over SPI.
 #define PIN_SD_MOSI GPIO_NUM_33

@@ -19,7 +19,20 @@
       "inheritDefault": "hidden"
     }
   },
+  "idf.openOcdConfigs": [
+    "board/esp32-wrover-kit-3.3v.cfg"
+  ],
+  "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32"
+  },
+  "clangd.path": "C:/Espressif/tools/esp-clangd/esp-21.1.3_20260408/esp-clangd/bin/clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=${workspaceFolder}/build"
+  ],
   "terminal.integrated.stickyScroll.enabled": false,
   "idf.flashType": "UART",
-  "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf"
+  "idf.port": "COM5"
 }

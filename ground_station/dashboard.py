@@ -21,7 +21,11 @@ Expects the ESP32 to print one CSV line per sample (the same `line` that goes to
   batt_v,batt_a
 Other lines (ESP-IDF log messages) are ignored. Older 14-column logs (no battery) still replay.
 
-Keys: Z = zero attitude, Y = zero yaw only, G = re-calibrate gyro (hold still), R = restart replay
+Keys: Z = zero attitude, Y = zero yaw only, G = re-calibrate gyro (hold still), R = restart replay,
+      C = clear the 3D path
+
+The "3D path" tab estimates the flight path without GPS: airspeed along the gyro heading for
+x/y, baro altitude for z. Heading drifts and wind is ignored, so treat it as a sketch.
 """
 import argparse
 import math
@@ -49,6 +53,11 @@ ACC_GATE = 0.3         # ignore accel for tilt correction when |a| is more than 
 GYRO_CAL_SAMPLES = 100  # samples averaged at start for gyro bias (board must be still)
 STILL_DPS = 2.0         # board counts as "still" when every gyro axis is within this of the bias
 BIAS_ALPHA = 0.01       # how fast the bias estimate tracks while still (per sample)
+
+PATH_GRID_M = 400       # size of the ground grid in the 3D path tab (m)
+PATH_STEP_M = 0.5       # store a path point after moving this far (m)
+PATH_MAX_POINTS = 20000  # halve the stored path when it grows past this
+PATH_PLANE_SCALE = 2.0  # size of the plane marker on the path (about 7 m wingspan)
 
 # If the plane tilts the wrong way, flip the sign of that axis here (roll, pitch, yaw).
 SIGN = (1, 1, 1)
@@ -265,6 +274,7 @@ class Dashboard(QtWidgets.QMainWindow):
         self.off = [0.0, 0.0, 0.0]          # degrees, raw (before SIGN)
         self.cal_buf, self.gyro_bias, self.calibrating = [], np.zeros(3), True
         self.still = False
+        self.reset_path()
         self.build_ui()
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -277,6 +287,16 @@ class Dashboard(QtWidgets.QMainWindow):
         root.setStyleSheet("#root{background:#0e1116;}")
         self.setCentralWidget(root)
         outer = QtWidgets.QVBoxLayout(root)
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setStyleSheet(
+            "QTabWidget::pane{border:none;}"
+            "QTabBar::tab{background:#1b1f27;color:#8b93a1;padding:6px 16px;border-radius:6px;"
+            "margin-right:4px;}QTabBar::tab:selected{background:#2a3142;color:#e6e9ef;}")
+        outer.addWidget(self.tabs, 1)
+        live = QtWidgets.QWidget()
+        live_lay = QtWidgets.QVBoxLayout(live)
+        live_lay.setContentsMargins(0, 6, 0, 0)
+        self.tabs.addTab(live, "Live")
 
         # top strip
         self.c_air = Card("Airspeed", "m/s", "#4fc3f7", big=40)
@@ -294,10 +314,10 @@ class Dashboard(QtWidgets.QMainWindow):
                      (self.c_hum, 2), (self.c_ptemp, 2), (self.c_dp, 2), (self.c_g, 2),
                      (self.c_batt_v, 2), (self.c_batt_a, 2)):
             top.addWidget(c, s)
-        outer.addLayout(top)
+        live_lay.addLayout(top)
 
         mid = QtWidgets.QHBoxLayout()
-        outer.addLayout(mid, 1)
+        live_lay.addLayout(mid, 1)
 
         # left: 3D + attitude + raw IMU
         left = QtWidgets.QVBoxLayout()
@@ -380,6 +400,59 @@ class Dashboard(QtWidgets.QMainWindow):
         self.status.setStyleSheet("color:#8b93a1;font-size:12px;")
         bar.addWidget(self.status)
         outer.addLayout(bar)
+        self.build_path_tab(btn_css)
+
+    def build_path_tab(self, btn_css):
+        """Estimated 3D flight path: dead reckoning from airspeed + heading, baro altitude."""
+        tab = QtWidgets.QWidget()
+        lay = QtWidgets.QHBoxLayout(tab)
+        lay.setContentsMargins(0, 6, 0, 0)
+        self.tabs.addTab(tab, "3D path")
+
+        self.path_view = gl.GLViewWidget()
+        self.path_view.setBackgroundColor("#12151b")
+        self.path_view.setCameraPosition(distance=PATH_GRID_M, elevation=30, azimuth=-135)
+        grid = gl.GLGridItem()
+        grid.setSize(PATH_GRID_M, PATH_GRID_M)
+        grid.setSpacing(PATH_GRID_M / 20, PATH_GRID_M / 20)
+        self.path_view.addItem(grid)
+        self.path_line = gl.GLLinePlotItem(pos=np.zeros((1, 3)), color=(0.31, 0.76, 0.97, 1),
+                                           width=2, antialias=True)
+        self.path_view.addItem(self.path_line)
+        self.path_drop = gl.GLLinePlotItem(pos=np.zeros((2, 3)), color=(0.55, 0.58, 0.63, 0.6),
+                                           width=1, antialias=True)   # marker down to the ground
+        self.path_view.addItem(self.path_drop)
+        self.path_plane = build_plane()
+        self.path_view.addItem(self.path_plane)
+        lay.addWidget(self.path_view, 1)
+
+        side = QtWidgets.QVBoxLayout()
+        self.c_dist = Card("Distance flown", "m", "#4fc3f7")
+        self.c_home = Card("From start", "m", "#81e6a0")
+        self.c_path_alt = Card("Altitude", "m", "#81e6a0")
+        for c in (self.c_dist, self.c_home, self.c_path_alt):
+            side.addWidget(c)
+        self.follow = QtWidgets.QCheckBox("Follow the plane")
+        self.follow.setChecked(True)
+        self.follow.setStyleSheet("color:#c7ccd6;")
+        side.addWidget(self.follow)
+        for text, fn in (("Fit whole path", self.fit_path), ("Clear path (C)", self.reset_path)):
+            b = QtWidgets.QPushButton(text)
+            b.setStyleSheet(btn_css)
+            b.clicked.connect(fn)
+            side.addWidget(b)
+        note = QtWidgets.QLabel(
+            "Estimated, not GPS: airspeed along the gyro heading, with baro altitude. "
+            "Heading drifts and wind is not included, so the track wanders over time. "
+            "Without airspeed the path only moves up and down.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#6c7482;font-size:11px;")
+        side.addWidget(note)
+        side.addStretch(1)
+        panel = QtWidgets.QWidget()
+        panel.setFixedWidth(240)
+        panel.setLayout(side)
+        lay.addWidget(panel)
 
     # ---------- Actions ----------
     def zero_attitude(self):
@@ -399,6 +472,21 @@ class Dashboard(QtWidgets.QMainWindow):
         self.n = 0
         self.last_t = None
         self.start_cal()
+        self.reset_path()
+
+    def reset_path(self):
+        self.pos = np.zeros(3)              # metres: x, y from the start point, z = baro altitude
+        self.path = [self.pos.copy()]
+        self.path_dist = 0.0
+        self.path_dirty = True
+
+    def fit_path(self):
+        p = np.array(self.path)
+        lo, hi = p.min(axis=0), p.max(axis=0)
+        size = float(np.max(hi - lo))
+        self.follow.setChecked(False)
+        self.path_view.setCameraPosition(pos=pg.Vector(*((lo + hi) / 2)),
+                                         distance=max(size * 1.6, 20.0))
 
     def keyPressEvent(self, e):
         k = e.text().lower()
@@ -408,6 +496,8 @@ class Dashboard(QtWidgets.QMainWindow):
             self.zero_yaw()
         elif k == "g":
             self.start_cal()
+        elif k == "c":
+            self.reset_path()
         elif k == "r" and self.replay is not None:
             self.reset_state()
             self.replay.restart()
@@ -497,6 +587,34 @@ class Dashboard(QtWidgets.QMainWindow):
             self.still = still
             g = tuple(g[i] - self.gyro_bias[i] for i in range(3))
             self.att.update(a, g, dt, freeze_yaw=still)
+        self.advance_path(r, dt)
+
+    def angles(self):
+        """Roll, pitch, yaw in degrees as drawn: zero offsets and SIGN applied."""
+        return (SIGN[0] * (math.degrees(self.att.roll) - self.off[0]),
+                SIGN[1] * (math.degrees(self.att.pitch) - self.off[1]),
+                SIGN[2] * (math.degrees(self.att.yaw) - self.off[2]))
+
+    def advance_path(self, r, dt):
+        """Dead reckoning: move along the nose direction at airspeed; height from the baro."""
+        _, pitch, yaw = (math.radians(v) for v in self.angles())
+        v = r[I["airspeed_ms"]]
+        v = v if math.isfinite(v) else 0.0
+        # Nose direction of the drawn plane, Rz(yaw) * Ry(pitch) * x.
+        nose = np.array([math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw),
+                         -math.sin(pitch)])
+        step = v * dt * nose
+        new = self.pos + step
+        alt = r[I["alt_m"]]
+        if math.isfinite(alt):
+            new[2] = alt
+        self.path_dist += float(np.linalg.norm(step[:2]))
+        self.pos = new
+        if np.linalg.norm(new - self.path[-1]) >= PATH_STEP_M:
+            self.path.append(new.copy())
+            if len(self.path) > PATH_MAX_POINTS:
+                self.path = self.path[::2]
+        self.path_dirty = True
 
     def push(self, batch):
         if not batch:
@@ -552,9 +670,7 @@ class Dashboard(QtWidgets.QMainWindow):
                           (self.c_gy, "gy_dps", "{:+.1f}"), (self.c_gz, "gz_dps", "{:+.1f}")):
             c.set(r[I[col]], f)
 
-        roll = SIGN[0] * (math.degrees(self.att.roll) - self.off[0])
-        pitch = SIGN[1] * (math.degrees(self.att.pitch) - self.off[1])
-        yaw = SIGN[2] * (math.degrees(self.att.yaw) - self.off[2])
+        roll, pitch, yaw = self.angles()
         self.c_roll.set(roll, "{:+.1f}")
         self.c_pitch.set(pitch, "{:+.1f}")
         self.c_yaw.set(yaw, "{:+.1f}")
@@ -570,6 +686,27 @@ class Dashboard(QtWidgets.QMainWindow):
             x = (d[:, 0] - d[-1, 0]) / 1000.0
             for col, curve in self.curves.items():
                 curve.setData(x, d[:, I[col]])
+
+        if self.tabs.currentIndex() == 1:
+            self.render_path(roll, pitch, yaw)
+
+    def render_path(self, roll, pitch, yaw):
+        if self.path_dirty:
+            self.path_dirty = False
+            self.path_line.setData(pos=np.array(self.path + [self.pos]))
+        x, y, z = self.pos
+        self.path_drop.setData(pos=np.array([[x, y, z], [x, y, 0.0]]))
+        self.path_plane.resetTransform()
+        self.path_plane.translate(x, y, z)
+        self.path_plane.rotate(yaw, 0, 0, 1, local=True)
+        self.path_plane.rotate(pitch, 0, 1, 0, local=True)
+        self.path_plane.rotate(roll, 1, 0, 0, local=True)
+        self.path_plane.scale(PATH_PLANE_SCALE, PATH_PLANE_SCALE, PATH_PLANE_SCALE, local=True)
+        if self.follow.isChecked():
+            self.path_view.setCameraPosition(pos=pg.Vector(x, y, z))
+        self.c_dist.set(self.path_dist, "{:.0f}")
+        self.c_home.set(math.hypot(x, y), "{:.0f}")
+        self.c_path_alt.set(z, "{:.1f}")
 
 
 def main():
@@ -590,6 +727,8 @@ def main():
             sys.exit(f"No data rows in {replay.name}")
 
     pg.setConfigOptions(antialias=True)
+    # Two 3D views (Live and 3D path) need one shared GL context, or their shaders fail to draw.
+    QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = pg.mkQApp("ESP32 Dashboard")
     win = Dashboard(None if replay else find_port(args.port), replay, args.baud)
     win.resize(1500, 900)

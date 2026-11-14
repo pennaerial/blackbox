@@ -12,7 +12,8 @@
 bool powerSetup(void);
 
 // Instantaneous calibrated readings; does not update the rolling average.
-// Voltage = signal volts * 10.11; current = signal volts * 36.364 (no offset).
+// Voltage = signal volts * 10.11; current = signal volts * 19.65 (no offset),
+// or 0 A when the current signal is at or below 150 mV (ESP32 ADC floor).
 // Both read functions require four non-null outputs and successful setup.
 // On failure, return false without changing the outputs or averaging state.
 bool powerRead(float *voltage_v, float *current_a, int *voltage_raw, int *current_raw);

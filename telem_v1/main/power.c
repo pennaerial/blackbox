@@ -14,7 +14,12 @@
 // Calibration was measured on the ESP32-C6 bench wiring; re-check it on the ESP32.
 
 #define VOLTAGE_DIVIDER_RATIO 10.11f
-#define CURRENT_AMPS_PER_VOLT 36.364f
+// Current re-fit on the ESP32 against an inline power meter (log_018 + bench video,
+// 2026-11-14): 2.443 V signal at the 48 A full-throttle plateau. Old value was 36.364.
+#define CURRENT_AMPS_PER_VOLT 19.65f
+// Idle sits at 142 mV (ADC floor); 95% of idle samples in log_018 were <= ~150 mV.
+// Signals at or below this report 0 A, so real currents under ~3 A also read 0.
+#define CURRENT_FLOOR_MV 150
 // The reference sketch does not apply its unused CURRENT_ADC_OFFSET (5.17).
 
 static const char *TAG = "power";
@@ -129,7 +134,9 @@ bool powerRead(float *voltage_v, float *current_a, int *voltage_raw, int *curren
     *voltage_raw = voltageRaw;
     *current_raw = currentRaw;
     *voltage_v = voltageMilliVolts / 1000.0f * VOLTAGE_DIVIDER_RATIO;
-    *current_a = currentMilliVolts / 1000.0f * CURRENT_AMPS_PER_VOLT;
+    *current_a = currentMilliVolts <= CURRENT_FLOOR_MV
+                     ? 0.0f
+                     : currentMilliVolts / 1000.0f * CURRENT_AMPS_PER_VOLT;
     return true;
 }
 

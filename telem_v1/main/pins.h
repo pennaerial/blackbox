@@ -18,8 +18,8 @@
 #define PIN_SD_CS GPIO_NUM_23
 
 // Power module; both must be ADC1 pins (GPIO32-39). 36 = VP, 39 = VN, both input-only.
-#define PIN_POWER_VOLTAGE GPIO_NUM_39
-#define PIN_POWER_CURRENT GPIO_NUM_36
+#define PIN_POWER_VOLTAGE GPIO_NUM_36
+#define PIN_POWER_CURRENT GPIO_NUM_39
 
 
 // SiK telemetry radio UART (wireless.c, set up in main.c when ENABLE_RADIO is 1). Not wired.

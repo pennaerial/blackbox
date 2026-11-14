@@ -29,8 +29,8 @@
 #define PIN_POWER_CURRENT GPIO_NUM_35
 #endif
 
-// SiK telemetry radio UART (wireless.c, set up in main.c). Not wired: GPIO_NUM_NC skips
-// radio setup. GPIO6-11 drive the ESP32's flash, so never use them here.
+// SiK telemetry radio UART (wireless.c, set up in main.c when ENABLE_RADIO is 1). Not wired.
+// GPIO6-11 drive the ESP32's flash, so never use them here.
 #define PIN_RADIO_TX GPIO_NUM_NC // ESP32 TX -> radio RX
 #define PIN_RADIO_RX GPIO_NUM_NC // ESP32 RX <- radio TX
 

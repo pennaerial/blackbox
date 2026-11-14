@@ -21,8 +21,8 @@ The matching `.c`/`.h` pairs in `main/` handle:
   average. Print every 500 ms from the caller if desired. Not yet called by the
   logger or written to the CSV.
 - `wireless`: sends each CSV row to the SiK telemetry radio on UART1 at 57600 baud
-  (TX/RX pins in `pins.h`). Not wired: both pins are `GPIO_NUM_NC`, so `main.c`
-  skips radio setup. Log messages stay on the USB console.
+  (TX/RX pins in `pins.h`). Not wired: `ENABLE_RADIO` is 0 in `main.c`, so radio
+  setup is skipped. Log messages stay on the USB console.
 
 ## Wiring and behavior
 

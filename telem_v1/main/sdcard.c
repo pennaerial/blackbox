@@ -75,7 +75,7 @@ bool sdSetup(void)
 
     ESP_LOGI(TAG, "Logging to %s", name);
     if (fputs("t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_pa,pitot_temp_c,airspeed_ms,"
-              "ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps\r\n", logFile) == EOF || !flushLog()) {
+              "ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,batt_v,batt_a\r\n", logFile) == EOF || !flushLog()) {
         ESP_LOGE(TAG, "Failed to write CSV header");
         fclose(logFile);
         logFile = NULL;

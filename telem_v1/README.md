@@ -13,13 +13,12 @@ The matching `.c`/`.h` pairs in `main/` handle:
 - `bme680`: temperature, humidity, pressure and altitude relative to startup,
   probing 0x77 then 0x76. Altitude uses the same pressure sample as the CSV row.
 - `sdcard`: FAT-formatted SD card over SPI, CSV file creation and periodic sync.
-- `power`: battery voltage and current on the ADC1 pins in `pins.h` (GPIO1/GPIO0
-  when built for the ESP32-C6 bench, proposed GPIO34/GPIO35 on the ESP32), using
+- `power`: battery voltage (GPIO36) and current (GPIO39) on ADC1, using
   calibrated signal volts scaled by 10.11 and 36.364 respectively. That calibration
-  was measured on the C6. `powerRead()` returns instantaneous values; calling
-  `powerReadAverage()` every 100 ms maintains a 50-sample (nominal 5-second) rolling
-  average. Print every 500 ms from the caller if desired. Not yet called by the
-  logger or written to the CSV.
+  was measured on the C6 and must be re-checked on the ESP32. The logger calls
+  `powerRead()` once per row and writes the instantaneous values to the `batt_v`
+  and `batt_a` columns. `powerReadAverage()` (50-sample, nominal 5-second rolling
+  average) is available but not used by the logger.
 - `wireless`: sends each CSV row to the SiK telemetry radio on UART1 at 57600 baud
   (TX/RX pins in `pins.h`). Not wired: `ENABLE_RADIO` is 0 in `main.c`, so radio
   setup is skipped. Log messages stay on the USB console.
@@ -37,6 +36,8 @@ sensor settings are preserved from the original logger source:
 | SD MISO | 34 |
 | SD SCLK | 32 |
 | SD CS | 23 |
+| Battery voltage | 36 (VP) |
+| Battery current | 39 (VN) |
 
 I2C runs at 400 kHz and the SD SPI maximum is 4 MHz, matching the updated Arduino
 logger. If a sensor is unreliable, drop the I2C devices back to 100 kHz. These
@@ -64,7 +65,7 @@ The logger has a nominal 50 ms period. Actual throughput depends on sensor and
 SD I/O latency. Missing or failed sensor readings are written as `nan`.
 Console output contains CSV rows plus ESP-IDF diagnostic messages. SD files are
 named `log_001.csv` through `log_999.csv`, with the original CSV columns and
-units, and are synced approximately once a second. If all filenames are used,
+units plus `batt_v` (V) and `batt_a` (A) at the end, and are synced approximately once a second. If all filenames are used,
 SD logging is disabled; existing files are kept. Mount failures never trigger
 formatting, and write/sync failures stop SD logging while console output continues.
 

@@ -1,6 +1,7 @@
 {
   "cmake.sourceDirectory": "${workspaceFolder}/telem_v1",
   "terminal.integrated.stickyScroll.enabled": false,
-  "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf",
-  "idf.port": "COM5"
+  "idf.currentSetup": "/Users/mlee/.espressif/v6.1/esp-idf",
+  "idf.port": "COM5",
+  "idf.flashType": "JTAG"
 }

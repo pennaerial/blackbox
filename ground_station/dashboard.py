@@ -17,8 +17,9 @@ Run from ground_station/:
 Without uv: pip install pyserial pyqtgraph PySide6 PyOpenGL numpy, then python dashboard.py
 
 Expects the ESP32 to print one CSV line per sample (the same `line` that goes to the SD card):
-  t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_pa,pitot_temp_c,airspeed_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps
-Other lines (ESP-IDF log messages) are ignored.
+  t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_pa,pitot_temp_c,airspeed_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,
+  batt_v,batt_a
+Other lines (ESP-IDF log messages) are ignored. Older 14-column logs (no battery) still replay.
 
 Keys: Z = zero attitude, Y = zero yaw only, G = re-calibrate gyro (hold still), R = restart replay
 """
@@ -60,19 +61,21 @@ def remap(x, y, z):
 
 
 COLS = ["t_ms", "alt_m", "press_hpa", "bme_temp_c", "hum_pct", "dp_pa", "pitot_temp_c",
-        "airspeed_ms", "ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps"]
+        "airspeed_ms", "ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps", "batt_v", "batt_a"]
 I = {n: i for i, n in enumerate(COLS)}
+OLD_N = 14             # rows logged before the battery columns were added
 
 
 # ======================= Helpers =======================
 def parse(line: bytes):
     parts = line.decode("ascii", "ignore").strip().split(",")
-    if len(parts) != len(COLS):
+    if len(parts) not in (len(COLS), OLD_N):
         return None
     try:
-        return [float(p) for p in parts]
+        row = [float(p) for p in parts]
     except ValueError:
         return None
+    return row + [math.nan] * (len(COLS) - len(row))
 
 
 def find_port(arg=None):
@@ -284,9 +287,12 @@ class Dashboard(QtWidgets.QMainWindow):
         self.c_ptemp = Card("Pitot temp", "C", "#ff9d6e")
         self.c_dp = Card("Diff pressure", "Pa", "#c59bff")
         self.c_g = Card("|Accel|", "g", "#ff7b8a")
+        self.c_batt_v = Card("Battery", "V", "#f2e86d")
+        self.c_batt_a = Card("Current", "A", "#f2a65a")
         top = QtWidgets.QHBoxLayout()
         for c, s in ((self.c_air, 3), (self.c_alt, 3), (self.c_press, 2), (self.c_temp, 2),
-                     (self.c_hum, 2), (self.c_ptemp, 2), (self.c_dp, 2), (self.c_g, 2)):
+                     (self.c_hum, 2), (self.c_ptemp, 2), (self.c_dp, 2), (self.c_g, 2),
+                     (self.c_batt_v, 2), (self.c_batt_a, 2)):
             top.addWidget(c, s)
         outer.addLayout(top)
 
@@ -539,6 +545,8 @@ class Dashboard(QtWidgets.QMainWindow):
         self.c_dp.set(r[I["dp_pa"]], "{:.1f}")
         ax, ay, az = r[I["ax_g"]], r[I["ay_g"]], r[I["az_g"]]
         self.c_g.set(math.sqrt(ax * ax + ay * ay + az * az), "{:.2f}")
+        self.c_batt_v.set(r[I["batt_v"]], "{:.2f}")
+        self.c_batt_a.set(r[I["batt_a"]], "{:.1f}")
         for c, col, f in ((self.c_ax, "ax_g", "{:+.3f}"), (self.c_ay, "ay_g", "{:+.3f}"),
                           (self.c_az, "az_g", "{:+.3f}"), (self.c_gx, "gx_dps", "{:+.1f}"),
                           (self.c_gy, "gy_dps", "{:+.1f}"), (self.c_gz, "gz_dps", "{:+.1f}")):

@@ -1,5 +1,5 @@
 /*
- * ESP32 logger: BME680, MS4525DO, LSM6DSO, and an SPI SD card.
+ * ESP32 logger: BME680, MS4525DO, LSM6DSO, battery power module, and an SPI SD card.
  * Pin assignments are in pins.h.
  * During startup keep the board still, and leave the pitot OPEN but out of any draft.
  * Covering it creates a pressure transient, not a true zero.
@@ -10,6 +10,7 @@
 #include "airspeed.h"
 #include "bme680.h"
 #include "sdcard.h"
+#include "power.h"
 #include "wireless.h"
 #include "pins.h"
 
@@ -105,6 +106,10 @@ void app_main(void)
     if (!sdOk)
         ESP_LOGW(TAG, "SD card NOT available (logging to console only)");
 
+    bool powerOk = powerSetup();
+    if (!powerOk)
+        ESP_LOGW(TAG, "Power module NOT set up; battery fields will be NaN");
+
     bool radioOk = false;
 #if ENABLE_RADIO
     // CSV rows only go to the radio; ESP-IDF log messages stay on the USB console.
@@ -139,11 +144,17 @@ void app_main(void)
         if (imuOk)
             imuRead(&ax, &ay, &az, &gx, &gy, &gz);
 
+        // Instantaneous (not averaged), so current spikes show up in the log.
+        float battV = NAN, battA = NAN;
+        int battVRaw, battARaw;
+        if (powerOk)
+            powerRead(&battV, &battA, &battVRaw, &battARaw);
+
         char line[220];
         snprintf(line, sizeof(line),
-                 "%" PRIu64 ",%.2f,%.2f,%.2f,%.1f,%.2f,%.1f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f",
+                 "%" PRIu64 ",%.2f,%.2f,%.2f,%.1f,%.2f,%.1f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f",
                  (uint64_t)(esp_timer_get_time() / 1000), alt, press, bmeT, hum, dp, pitotT, v,
-                 ax, ay, az, gx, gy, gz);
+                 ax, ay, az, gx, gy, gz, battV, battA);
         puts(line);
         if (radioOk)
             wirelessSendLine(line);

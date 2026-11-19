@@ -15,6 +15,7 @@ logs into `ground_station/logs/`. Through the telemetry radio, pass the ground
 radio's port and its baud: `uv run dashboard.py COM7 --baud 57600`.
 `uv run radio_settings.py` reads the radio's settings without Mission Planner. The
 logger records raw sensor values. The dashboard applies the airspeed and battery
-calibration, so calibration changes go in `dashboard.py` and also apply to old logs.
+calibration, so calibration changes go in `dashboard.py` and also apply to logs already
+recorded.
 The dashboard's `LOG_COLS` must match the CSV header in `telem_v1/main/sdcard.c` and the
 row format in `telem_v1/main/main.c`.

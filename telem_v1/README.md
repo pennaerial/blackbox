@@ -113,8 +113,8 @@ named `log_001.csv` through `log_999.csv` and are synced approximately once a se
 Their columns are `t_ms`, `alt_m`, `press_hpa`, `bme_temp_c`, `hum_pct`, `dp_raw_pa`
 (Pa, not zeroed), `pitot_temp_c`, `ax_g`/`ay_g`/`az_g`, `gx_dps`/`gy_dps`/`gz_dps`,
 `batt_v_sig_mv` and `batt_a_sig_mv` (pin signal, mV), and `batt_v_adc` and
-`batt_a_adc` (raw ADC counts). Logs from older firmware have calibrated `dp_pa`,
-`airspeed_ms`, `batt_v` and `batt_a` columns instead; the dashboard reads both. If all
+`batt_a_adc` (raw ADC counts). The dashboard does not read logs from firmware before
+raw logging (calibrated `dp_pa`, `airspeed_ms`, `batt_v` and `batt_a` columns). If all
 filenames are used, a new log cannot start; existing files are kept. Mount failures never
 trigger formatting, and the mount is retried when a log is started. A write/sync failure
 stops that log, the laptop is told, and console output continues.

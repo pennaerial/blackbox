@@ -26,8 +26,8 @@ Without uv: pip install pyserial pyqtgraph PySide6 PyOpenGL numpy, then python d
 Expects the ESP32 to print one CSV line per sample (the same `line` that goes to the SD card):
   t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_raw_pa,pitot_temp_c,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,
   batt_v_sig_mv,batt_a_sig_mv,batt_v_adc,batt_a_adc
-Other lines (ESP-IDF log messages) are ignored. Older logs, which the ESP32 calibrated itself
-(16 columns, or 14 without battery), still replay.
+Other lines (ESP-IDF log messages) are ignored, and so are logs from firmware before the
+raw-logging change (16 or 14 columns, calibrated on the ESP32).
 
 The logger records raw values; this file does the calibration (settings below):
   - airspeed: zero from the first rows (pitot open, no draft), low-pass filter, slow auto-zero
@@ -102,7 +102,7 @@ def remap(x, y, z):
 
 # ======================= Calibration =======================
 # The ESP32 logs raw values; these turn them into airspeed and battery readings. They were
-# moved here from airspeed.c and power.c, so old logs and new logs use the same numbers.
+# moved here from airspeed.c and power.c, so a change also applies to logs already recorded.
 
 # Airspeed (MS4525DO + pitot)
 AIR_ZERO_ROWS = 40       # rows averaged for the zero (~2 s at 20 Hz); pitot open, out of any draft
@@ -141,31 +141,23 @@ CURRENT_FLOOR_MV = 150
 LOG_COLS = ["t_ms", "alt_m", "press_hpa", "bme_temp_c", "hum_pct", "dp_raw_pa", "pitot_temp_c",
             "ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps",
             "batt_v_sig_mv", "batt_a_sig_mv", "batt_v_adc", "batt_a_adc"]
-# Older firmware calibrated on the ESP32 and logged these (the first 14 before the battery).
-OLD_COLS = ["t_ms", "alt_m", "press_hpa", "bme_temp_c", "hum_pct", "dp_pa", "pitot_temp_c",
-            "airspeed_ms", "ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps", "batt_v", "batt_a"]
-# Every column the dashboard keeps: calibrated values first, then the raw ones.
-COLS = OLD_COLS + [c for c in LOG_COLS if c not in OLD_COLS]
+# Filled in by Calibration from the raw columns.
+CALIBRATED_COLS = ["dp_pa", "airspeed_ms", "batt_v", "batt_a"]
+COLS = LOG_COLS + CALIBRATED_COLS
 I = {n: i for i, n in enumerate(COLS)}
-# Formats are told apart by column count (17, 16 or 14).
-FORMATS = {len(cols): [I[c] for c in cols] for cols in (LOG_COLS, OLD_COLS, OLD_COLS[:14])}
 
 
 # ======================= Helpers =======================
 def parse(line: bytes):
-    """One CSV row as a list in COLS order; columns the log does not have are nan."""
+    """One CSV row as a list in COLS order, calibrated columns still nan; None if not a row."""
     parts = line.decode("ascii", "ignore").strip().split(",")
-    idx = FORMATS.get(len(parts))
-    if idx is None:
+    if len(parts) != len(LOG_COLS):
         return None
     try:
         vals = [float(p) for p in parts]
     except ValueError:
         return None
-    row = [math.nan] * len(COLS)
-    for i, v in zip(idx, vals):
-        row[i] = v
-    return row
+    return vals + [math.nan] * len(CALIBRATED_COLS)
 
 
 def air_cal(m):
@@ -181,7 +173,7 @@ def air_cal(m):
 
 class Calibration:
     """Fills dp_pa, airspeed_ms, batt_v and batt_a from the raw columns, row by row in time
-    order. Rows from older logs have no raw columns and keep the values the ESP32 logged."""
+    order."""
 
     def __init__(self):
         self.reset()
@@ -212,7 +204,7 @@ class Calibration:
 
     def airspeed(self, r):
         raw = r[I["dp_raw_pa"]]
-        if not math.isfinite(raw):     # old log, or no reading this row
+        if not math.isfinite(raw):     # no reading this row
             return
         if self.zero is None and not self.take_zero(raw):
             return                     # dp_pa and airspeed_ms stay nan while zeroing

@@ -543,6 +543,14 @@ def build_plane():
     return gl.GLMeshItem(meshdata=md, smooth=False, shader="shaded", glOptions="opaque")
 
 
+def shrinkable(label):
+    """A label whose text never sets the window's minimum width: it is cut off instead, so
+    longer text (more digits, a longer status) can't push the window past the screen."""
+    label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+    label.setMinimumWidth(0)
+    return label
+
+
 class Card(QtWidgets.QFrame):
     def __init__(self, title, unit="", color="#4fc3f7", big=26):
         super().__init__()
@@ -558,9 +566,8 @@ class Card(QtWidgets.QFrame):
                              "font-family:Consolas,Menlo,monospace;")
         self.sub = QtWidgets.QLabel("")
         self.sub.setStyleSheet("color:#6c7482;font-size:10px;")
-        lay.addWidget(head)
-        lay.addWidget(self.v)
-        lay.addWidget(self.sub)
+        for w in (head, self.v, self.sub):
+            lay.addWidget(shrinkable(w))
 
     def set(self, value, fmt="{:.2f}", sub=""):
         self.v.setText(fmt.format(value) if math.isfinite(value) else "--")
@@ -892,7 +899,7 @@ class Dashboard(QtWidgets.QMainWindow):
         self.c_batt_v = Card("Battery", "V", "#f2e86d")
         self.c_batt_a = Card("Current", "A", "#f2a65a")
         top = QtWidgets.QHBoxLayout()
-        for c, s in ((self.c_air, 3), (self.c_alt, 3), (self.c_press, 2), (self.c_temp, 2),
+        for c, s in ((self.c_air, 3), (self.c_alt, 2), (self.c_press, 3), (self.c_temp, 2),
                      (self.c_hum, 2), (self.c_ptemp, 2), (self.c_dp, 2), (self.c_g, 2),
                      (self.c_batt_v, 2), (self.c_batt_a, 2)):
             top.addWidget(c, s)
@@ -904,7 +911,7 @@ class Dashboard(QtWidgets.QMainWindow):
         # left: 3D + attitude + raw IMU
         left = QtWidgets.QVBoxLayout()
         self.view = gl.GLViewWidget()
-        self.view.setMinimumSize(420, 340)
+        self.view.setMinimumSize(240, 160)   # small enough for a 13" laptop screen
         self.view.setBackgroundColor("#12151b")
         self.view.setCameraPosition(distance=10, elevation=20, azimuth=-150)
         grid = gl.GLGridItem()
@@ -984,10 +991,10 @@ class Dashboard(QtWidgets.QMainWindow):
             b.setStyleSheet(btn_css)
             b.clicked.connect(fn)
             bar.addWidget(b)
-        bar.addStretch(1)
-        self.status = QtWidgets.QLabel("")
+        self.status = shrinkable(QtWidgets.QLabel(""))   # full text in its tooltip
         self.status.setStyleSheet("color:#8b93a1;font-size:12px;")
-        bar.addWidget(self.status)
+        bar.addSpacing(8)
+        bar.addWidget(self.status, 1)       # left-aligned: the port and rate stay visible when cut
         if self.link is not None:
             outer.addLayout(self.build_logger_bar(btn_css))
         outer.addLayout(bar)
@@ -1001,10 +1008,11 @@ class Dashboard(QtWidgets.QMainWindow):
         self.sensors.setStyleSheet("color:#8b93a1;font-size:12px;")
         self.note = QtWidgets.QLabel("")
         self.note.setStyleSheet("color:#ffb347;font-size:12px;")
-        for w in (self.rec, self.sensors, self.note):
-            bar.addWidget(w)
+        for w, stretch in ((self.rec, 0), (self.sensors, 2), (self.note, 3)):
+            if stretch:
+                shrinkable(w)              # long sensor lists and notes get cut, full text on hover
+            bar.addWidget(w, stretch)
             bar.addSpacing(16)
-        bar.addStretch(1)
         self.logger_btns = []
         for text, fn in (("Start new log", self.start_log),
                          ("Calibrate IMU...", self.open_wizard),
@@ -1358,6 +1366,7 @@ class Dashboard(QtWidgets.QMainWindow):
         if self.cal.note:
             msg += f"   |   {self.cal.note}"
         self.status.setText(msg)
+        self.status.setToolTip(msg)
 
         r = self.latest
         if r is None:
@@ -1425,7 +1434,9 @@ class Dashboard(QtWidgets.QMainWindow):
         self.rec.setText(rec)
         self.rec.setStyleSheet(f"color:{color};font-size:15px;font-weight:600;")
         self.sensors.setText(sensors)
+        self.sensors.setToolTip(sensors)
         self.note.setText(self.logger_note)
+        self.note.setToolTip(self.logger_note)
         for b in self.logger_btns:
             b.setEnabled(usable)
 
@@ -1492,7 +1503,10 @@ def main():
         win = Dashboard(None, link=WifiLink(args.wifi), R=R)
     else:
         win = Dashboard(None if replay else find_port(args.port), replay, args.baud, R=R)
-    win.resize(1500, 900)
+    # 1500 x 900 where it fits, otherwise the screen's usable area (menu bar and Dock excluded).
+    avail = app.primaryScreen().availableGeometry()
+    win.resize(min(1500, avail.width()), min(900, avail.height()))
+    win.move(avail.topLeft())
     win.show()
     pg.exec()
 

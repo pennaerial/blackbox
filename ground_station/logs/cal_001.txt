@@ -1,0 +1,17 @@
+# PennAiR black box IMU mounting calibration, written by the logger.
+# Means and standard deviations of the raw IMU axes in each still pose.
+# The ground station works out the mount rotation from the two poses.
+t_ms,1150129
+log,none
+level_samples,60
+level_acc_g,0.27855,0.04299,0.98334
+level_acc_sd_g,0.00341,0.00820,0.00669
+level_gyro_dps,-0.2526,-0.2491,0.0039
+level_gyro_sd_dps,0.5819,0.6972,0.5922
+pitch_samples,60
+pitch_acc_g,0.83415,0.10171,0.58601
+pitch_acc_sd_g,0.00278,0.00723,0.00709
+pitch_gyro_dps,-0.0513,-0.2384,0.0071
+pitch_gyro_sd_dps,0.6691,0.4926,0.3990
+# IMU position from the CG: x forward, y toward the left wing, z up.
+r_imu_from_cg_cm,10.00,0.00,0.00

@@ -11,12 +11,12 @@
 // Call setup once, then use the read functions from a single task.
 bool powerSetup(void);
 
-// Instantaneous calibrated readings; does not update the rolling average.
-// Voltage = signal volts * 10.11; current = signal volts * 19.65 (no offset),
-// or 0 A when the current signal is at or below 150 mV (ESP32 ADC floor).
+// Instantaneous readings; does not update the rolling average. Outputs are the signal at
+// each pin in millivolts (ADC counts converted with the chip's eFuse calibration) and the
+// raw 12-bit counts. Scaling to battery volts and amps is done on the ground station.
 // Both read functions require four non-null outputs and successful setup.
 // On failure, return false without changing the outputs or averaging state.
-bool powerRead(float *voltage_v, float *current_a, int *voltage_raw, int *current_raw);
+bool powerRead(int *voltage_mv, int *current_mv, int *voltage_raw, int *current_raw);
 
 // Call every 100 ms (or faster) to maintain a nominal 5-second rolling average.
 // Samples immediately on the first call, then at most once per 100 ms; calls
@@ -24,6 +24,7 @@ bool powerRead(float *voltage_v, float *current_a, int *voltage_raw, int *curren
 // during warm-up; raw outputs are the latest successful sample, not averages.
 // Slower calls or failed reads lengthen the window; no background task runs.
 // The caller can print at POWER_PRINT_INTERVAL_MS while continuing to sample.
-bool powerReadAverage(float *voltage_v, float *current_a, int *voltage_raw, int *current_raw);
+// The averages are of the pin signal in millivolts, like powerRead().
+bool powerReadAverage(float *voltage_mv, float *current_mv, int *voltage_raw, int *current_raw);
 
 #endif /* V1_POWER_H */

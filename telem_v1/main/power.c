@@ -11,16 +11,10 @@
 #define VOLTAGE_PIN PIN_POWER_VOLTAGE
 #define CURRENT_PIN PIN_POWER_CURRENT
 
-// Calibration was measured on the ESP32-C6 bench wiring; re-check it on the ESP32.
-
-#define VOLTAGE_DIVIDER_RATIO 10.11f
-// Current re-fit on the ESP32 against an inline power meter (log_018 + bench video,
-// 2026-11-14): 2.443 V signal at the 48 A full-throttle plateau. Old value was 36.364.
-#define CURRENT_AMPS_PER_VOLT 19.65f
-// Idle sits at 142 mV (ADC floor); 95% of idle samples in log_018 were <= ~150 mV.
-// Signals at or below this report 0 A, so real currents under ~3 A also read 0.
-#define CURRENT_FLOOR_MV 150
-// The reference sketch does not apply its unused CURRENT_ADC_OFFSET (5.17).
+// The logger records the pin signal in millivolts and the raw ADC counts. The scaling to
+// battery volts and amps (divider ratio, amps per volt, current floor) is applied on the
+// ground station: see the calibration settings in ground_station/dashboard.py.
+// ADC counts -> millivolts stays here because it uses the chip's own eFuse calibration.
 
 static const char *TAG = "power";
 static adc_oneshot_unit_handle_t adc_handle = NULL;
@@ -115,9 +109,9 @@ bool powerSetup(void)
     return true;
 }
 
-bool powerRead(float *voltage_v, float *current_a, int *voltage_raw, int *current_raw)
+bool powerRead(int *voltage_mv, int *current_mv, int *voltage_raw, int *current_raw)
 {
-    if (voltage_v == NULL || current_a == NULL || voltage_raw == NULL || current_raw == NULL ||
+    if (voltage_mv == NULL || current_mv == NULL || voltage_raw == NULL || current_raw == NULL ||
         voltage_cali == NULL || current_cali == NULL) return false;
 
     int voltageRaw = 0, currentRaw = 0;
@@ -133,21 +127,19 @@ bool powerRead(float *voltage_v, float *current_a, int *voltage_raw, int *curren
     // Use each raw sample for both its diagnostic count and calibrated voltage.
     *voltage_raw = voltageRaw;
     *current_raw = currentRaw;
-    *voltage_v = voltageMilliVolts / 1000.0f * VOLTAGE_DIVIDER_RATIO;
-    *current_a = currentMilliVolts <= CURRENT_FLOOR_MV
-                     ? 0.0f
-                     : currentMilliVolts / 1000.0f * CURRENT_AMPS_PER_VOLT;
+    *voltage_mv = voltageMilliVolts;
+    *current_mv = currentMilliVolts;
     return true;
 }
 
-bool powerReadAverage(float *voltage_v, float *current_a, int *voltage_raw, int *current_raw)
+bool powerReadAverage(float *voltage_mv, float *current_mv, int *voltage_raw, int *current_raw)
 {
-    if (voltage_v == NULL || current_a == NULL || voltage_raw == NULL || current_raw == NULL ||
+    if (voltage_mv == NULL || current_mv == NULL || voltage_raw == NULL || current_raw == NULL ||
         voltage_cali == NULL || current_cali == NULL) return false;
 
     int64_t now_us = esp_timer_get_time();
     if (sample_count == 0 || now_us - last_sample_us >= POWER_SAMPLE_INTERVAL_MS * 1000LL) {
-        float voltage, current;
+        int voltage, current;
         int voltageRaw, currentRaw;
         if (!powerRead(&voltage, &current, &voltageRaw, &currentRaw)) return false;
 
@@ -168,8 +160,8 @@ bool powerReadAverage(float *voltage_v, float *current_a, int *voltage_raw, int 
         last_sample_us = now_us;
     }
 
-    *voltage_v = voltage_sum / sample_count;
-    *current_a = current_sum / sample_count;
+    *voltage_mv = voltage_sum / sample_count;
+    *current_mv = current_sum / sample_count;
     *voltage_raw = latest_voltage_raw;
     *current_raw = latest_current_raw;
     return true;

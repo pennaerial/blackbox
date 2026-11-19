@@ -74,8 +74,10 @@ bool sdSetup(void)
     }
 
     ESP_LOGI(TAG, "Logging to %s", name);
-    if (fputs("t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_pa,pitot_temp_c,airspeed_ms,"
-              "ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,batt_v,batt_a\r\n", logFile) == EOF || !flushLog()) {
+    // Must match the row format in main.c and LOG_COLS in ground_station/dashboard.py.
+    if (fputs("t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_raw_pa,pitot_temp_c,"
+              "ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,"
+              "batt_v_sig_mv,batt_a_sig_mv,batt_v_adc,batt_a_adc\r\n", logFile) == EOF || !flushLog()) {
         ESP_LOGE(TAG, "Failed to write CSV header");
         fclose(logFile);
         logFile = NULL;

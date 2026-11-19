@@ -1,8 +1,10 @@
 /*
  * ESP32 logger: BME680, MS4525DO, LSM6DSO, battery power module, and an SPI SD card.
  * Pin assignments are in pins.h.
- * During startup keep the board still, and leave the pitot OPEN but out of any draft.
- * Covering it creates a pressure transient, not a true zero.
+ * Rows hold raw sensor values; the ground station (ground_station/dashboard.py) zeroes and
+ * calibrates airspeed and scales battery voltage and current. It zeroes the airspeed from the
+ * first ~2 s of rows, so after power-on keep the board still and leave the pitot OPEN but out
+ * of any draft. Covering it creates a pressure transient, not a true zero.
  */
 
 #include "main.h"
@@ -94,8 +96,6 @@ void app_main(void)
             ESP_LOGW(TAG, "IMU NOT set up");
 
         airspeedOk = airspeedSetup(bus);
-        if (airspeedOk)
-            calibrateAirspeed();
     }
     else
     {
@@ -136,25 +136,33 @@ void app_main(void)
         if (bmeOk)
             bmeRead(&alt, &press, &bmeT, &hum);
 
-        float dp = NAN, pitotT = NAN, v = NAN;
+        // Not zeroed or calibrated; the ground station does that.
+        float dp = NAN, pitotT = NAN;
         if (airspeedOk)
-            readAirspeed(press, &dp, &pitotT, &v);
+            readAirspeed(&dp, &pitotT);
 
         float ax = NAN, ay = NAN, az = NAN, gx = NAN, gy = NAN, gz = NAN;
         if (imuOk)
             imuRead(&ax, &ay, &az, &gx, &gy, &gz);
 
-        // Instantaneous (not averaged), so current spikes show up in the log.
-        float battV = NAN, battA = NAN;
-        int battVRaw, battARaw;
-        if (powerOk)
-            powerRead(&battV, &battA, &battVRaw, &battARaw);
+        // Instantaneous (not averaged), so current spikes show up in the log. Pin signal in
+        // mV plus raw ADC counts; the ground station scales them to battery volts and amps.
+        float battVmV = NAN, battAmV = NAN, battVAdc = NAN, battAAdc = NAN;
+        int vMv, aMv, vAdc, aAdc;
+        if (powerOk && powerRead(&vMv, &aMv, &vAdc, &aAdc))
+        {
+            battVmV = vMv;
+            battAmV = aMv;
+            battVAdc = vAdc;
+            battAAdc = aAdc;
+        }
 
-        char line[220];
+        // Column order must match the header in sdcard.c and LOG_COLS in dashboard.py.
+        char line[256];
         snprintf(line, sizeof(line),
-                 "%" PRIu64 ",%.2f,%.2f,%.2f,%.1f,%.2f,%.1f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f",
-                 (uint64_t)(esp_timer_get_time() / 1000), alt, press, bmeT, hum, dp, pitotT, v,
-                 ax, ay, az, gx, gy, gz, battV, battA);
+                 "%" PRIu64 ",%.2f,%.2f,%.2f,%.1f,%.2f,%.1f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.0f,%.0f,%.0f,%.0f",
+                 (uint64_t)(esp_timer_get_time() / 1000), alt, press, bmeT, hum, dp, pitotT,
+                 ax, ay, az, gx, gy, gz, battVmV, battAmV, battVAdc, battAAdc);
         puts(line);
         if (radioOk)
             wirelessSendLine(line);

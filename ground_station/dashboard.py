@@ -17,12 +17,20 @@ Run from ground_station/:
 Without uv: pip install pyserial pyqtgraph PySide6 PyOpenGL numpy, then python dashboard.py
 
 Expects the ESP32 to print one CSV line per sample (the same `line` that goes to the SD card):
-  t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_pa,pitot_temp_c,airspeed_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,
-  batt_v,batt_a
-Other lines (ESP-IDF log messages) are ignored. Older 14-column logs (no battery) still replay.
+  t_ms,alt_m,press_hpa,bme_temp_c,hum_pct,dp_raw_pa,pitot_temp_c,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,
+  batt_v_sig_mv,batt_a_sig_mv,batt_v_adc,batt_a_adc
+Other lines (ESP-IDF log messages) are ignored. Older logs, which the ESP32 calibrated itself
+(16 columns, or 14 without battery), still replay.
 
-Keys: Z = zero attitude, Y = zero yaw only, G = re-calibrate gyro (hold still), R = restart replay,
-      C = clear the 3D path
+The logger records raw values; this file does the calibration (settings below):
+  - airspeed: zero from the first rows (pitot open, no draft), low-pass filter, slow auto-zero
+    on the ground, wind-tunnel table, deadband and air density -> dp_pa and airspeed_ms.
+    Live, the zero is taken when the dashboard connects, so connect before flight or press A
+    with the plane still.
+  - battery: pin signal mV -> batt_v and batt_a.
+
+Keys: Z = zero attitude, Y = zero yaw only, G = re-calibrate gyro (hold still),
+      A = re-zero airspeed (pitot open, no draft), R = restart replay, C = clear the 3D path
 
 The "3D path" tab estimates the flight path without GPS: airspeed along the gyro heading for
 x/y, baro altitude for z. Heading drifts and wind is ignored, so treat it as a sketch.
@@ -69,22 +77,163 @@ def remap(x, y, z):
     return x, y, z
 
 
-COLS = ["t_ms", "alt_m", "press_hpa", "bme_temp_c", "hum_pct", "dp_pa", "pitot_temp_c",
-        "airspeed_ms", "ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps", "batt_v", "batt_a"]
+# ======================= Calibration =======================
+# The ESP32 logs raw values; these turn them into airspeed and battery readings. They were
+# moved here from airspeed.c and power.c, so old logs and new logs use the same numbers.
+
+# Airspeed (MS4525DO + pitot)
+AIR_ZERO_ROWS = 40       # rows averaged for the zero (~2 s at 20 Hz); pitot open, out of any draft
+AIR_ZERO_MAX_PA = 300.0  # only readings this close to 0 Pa count as no-wind
+AIR_ZERO_GIVE_UP = 200   # rows to wait for AIR_ZERO_ROWS good ones before zeroing with what there is
+AIR_ZERO_NOISY_PA = 1.5  # warn when the zero is noisier than this (rms): draft, or tube touched
+AIR_FILTER = 0.25        # IIR on the zeroed dp: higher = faster but noisier
+AIR_DEADBAND_PA = 1.5    # subtracted from the calibrated dp before the sqrt (noise floor)
+AIR_USE_CAL = True       # apply the wind-tunnel calibration table
+AIR_AUTOZERO = True      # slowly re-zero whenever the reading has been quiet for 10 s
+AIR_QUIET_PA = 4.0
+AIR_QUIET_MS = 10000
+AIR_AUTOZERO_GAIN = 0.002
+SEA_LEVEL_PA = 101325.0  # used for air density when the BME680 pressure is missing
+
+# PennAiR wind-tunnel sweep: measured dp -> tunnel reference dp, in Pa. The probe + tubing
+# under-reads (about 19% at speed, much more at low speed). Redo the sweep and replace both
+# tables if the probe, tubing or mounting changes.
+CAL_MEAS = [0.00, 7.47, 14.70, 23.41, 32.38, 51.31, 93.16, 117.07,
+            136.25, 158.67, 183.33, 200.52, 223.18, 239.87, 264.53, 301.15]
+CAL_TRUE = [0.00, 12.45, 24.91, 37.36, 49.82, 74.73, 124.54, 149.45,
+            174.36, 199.27, 224.18, 249.09, 274.00, 298.91, 323.82, 373.63]
+CAL_HIGH_GAIN = 1.24     # reference/measured ratio above the last table point
+
+# Battery power module. Calibration was measured on the ESP32-C6 bench wiring; re-check it
+# on the ESP32.
+VOLTAGE_DIVIDER_RATIO = 10.11
+# Current re-fit on the ESP32 against an inline power meter (log_018 + bench video,
+# 2026-11-14): 2.443 V signal at the 48 A full-throttle plateau. Old value was 36.364.
+CURRENT_AMPS_PER_VOLT = 19.65
+# Idle sits at 142 mV (ADC floor); 95% of idle samples in log_018 were <= ~150 mV.
+# Signals at or below this read 0 A, so real currents under ~3 A also read 0.
+CURRENT_FLOOR_MV = 150
+
+# Columns the logger writes now (must match sdcard.c and the row format in main.c).
+LOG_COLS = ["t_ms", "alt_m", "press_hpa", "bme_temp_c", "hum_pct", "dp_raw_pa", "pitot_temp_c",
+            "ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps",
+            "batt_v_sig_mv", "batt_a_sig_mv", "batt_v_adc", "batt_a_adc"]
+# Older firmware calibrated on the ESP32 and logged these (the first 14 before the battery).
+OLD_COLS = ["t_ms", "alt_m", "press_hpa", "bme_temp_c", "hum_pct", "dp_pa", "pitot_temp_c",
+            "airspeed_ms", "ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps", "batt_v", "batt_a"]
+# Every column the dashboard keeps: calibrated values first, then the raw ones.
+COLS = OLD_COLS + [c for c in LOG_COLS if c not in OLD_COLS]
 I = {n: i for i, n in enumerate(COLS)}
-OLD_N = 14             # rows logged before the battery columns were added
+# Formats are told apart by column count (17, 16 or 14).
+FORMATS = {len(cols): [I[c] for c in cols] for cols in (LOG_COLS, OLD_COLS, OLD_COLS[:14])}
 
 
 # ======================= Helpers =======================
 def parse(line: bytes):
+    """One CSV row as a list in COLS order; columns the log does not have are nan."""
     parts = line.decode("ascii", "ignore").strip().split(",")
-    if len(parts) not in (len(COLS), OLD_N):
+    idx = FORMATS.get(len(parts))
+    if idx is None:
         return None
     try:
-        row = [float(p) for p in parts]
+        vals = [float(p) for p in parts]
     except ValueError:
         return None
-    return row + [math.nan] * (len(COLS) - len(row))
+    row = [math.nan] * len(COLS)
+    for i, v in zip(idx, vals):
+        row[i] = v
+    return row
+
+
+def air_cal(m):
+    """Wind-tunnel calibration: measured dp -> reference dp (Pa)."""
+    if m <= 0.0:
+        return m * (CAL_TRUE[1] / CAL_MEAS[1])      # keep the sign for noise below zero
+    for i in range(1, len(CAL_MEAS)):
+        if m <= CAL_MEAS[i]:
+            f = (m - CAL_MEAS[i - 1]) / (CAL_MEAS[i] - CAL_MEAS[i - 1])
+            return CAL_TRUE[i - 1] + f * (CAL_TRUE[i] - CAL_TRUE[i - 1])
+    return CAL_TRUE[-1] + CAL_HIGH_GAIN * (m - CAL_MEAS[-1])
+
+
+class Calibration:
+    """Fills dp_pa, airspeed_ms, batt_v and batt_a from the raw columns, row by row in time
+    order. Rows from older logs have no raw columns and keep the values the ESP32 logged."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        """Start again from an airspeed zero (new log, reboot, or A key)."""
+        self.zero = None
+        self.zero_buf = []
+        self.zero_tries = 0
+        self.filt = 0.0
+        self.quiet_since = None
+        self.note = ""
+
+    @property
+    def zeroing(self):
+        return self.zero is None and self.zero_tries > 0
+
+    def apply(self, r):
+        self.power(r)
+        self.airspeed(r)
+
+    def power(self, r):
+        v_mv, a_mv = r[I["batt_v_sig_mv"]], r[I["batt_a_sig_mv"]]
+        if math.isfinite(v_mv):
+            r[I["batt_v"]] = v_mv / 1000.0 * VOLTAGE_DIVIDER_RATIO
+        if math.isfinite(a_mv):
+            r[I["batt_a"]] = 0.0 if a_mv <= CURRENT_FLOOR_MV else a_mv / 1000.0 * CURRENT_AMPS_PER_VOLT
+
+    def airspeed(self, r):
+        raw = r[I["dp_raw_pa"]]
+        if not math.isfinite(raw):     # old log, or no reading this row
+            return
+        if self.zero is None and not self.take_zero(raw):
+            return                     # dp_pa and airspeed_ms stay nan while zeroing
+        self.filt += AIR_FILTER * ((raw - self.zero) - self.filt)
+
+        if AIR_AUTOZERO:
+            # Within a few Pa of zero for 10 s counts as no wind; nudging the offset then
+            # cancels warm-up and temperature drift on the ground.
+            t = r[I["t_ms"]]
+            if abs(self.filt) < AIR_QUIET_PA:
+                if self.quiet_since is None:
+                    self.quiet_since = t
+                if t - self.quiet_since > AIR_QUIET_MS:
+                    self.zero += AIR_AUTOZERO_GAIN * self.filt
+            else:
+                self.quiet_since = None
+
+        press, temp = r[I["press_hpa"]], r[I["pitot_temp_c"]]
+        p_pa = press * 100.0 if math.isfinite(press) else SEA_LEVEL_PA
+        rho = p_pa / (287.058 * (temp + 273.15))
+        dp_c = air_cal(self.filt) if AIR_USE_CAL else self.filt
+        eff = dp_c - AIR_DEADBAND_PA       # soft deadband: no jump at the edge
+        r[I["airspeed_ms"]] = math.sqrt(2.0 * eff / rho) if eff > 0.0 else 0.0
+        r[I["dp_pa"]] = self.filt
+
+    def take_zero(self, raw):
+        """Collect one zero reading; True once the zero is set."""
+        self.zero_tries += 1
+        if abs(raw) < AIR_ZERO_MAX_PA:
+            self.zero_buf.append(raw)
+        if len(self.zero_buf) < AIR_ZERO_ROWS and self.zero_tries < AIR_ZERO_GIVE_UP:
+            return False
+        if len(self.zero_buf) >= 20:
+            z = np.array(self.zero_buf)
+            self.zero, sd = float(z.mean()), float(z.std())
+            self.note = f"airspeed zero {self.zero:.2f} Pa, noise {sd:.2f} Pa rms"
+            if sd > AIR_ZERO_NOISY_PA:
+                self.note += " - NOISY: draft, or tube touched? Press A to re-zero"
+        else:
+            self.zero = 0.0
+            self.note = "airspeed NOT zeroed (no still readings) - press A with the pitot still"
+        print(self.note)
+        self.filt = 0.0
+        return True
 
 
 def find_port(arg=None):
@@ -271,6 +420,7 @@ class Dashboard(QtWidgets.QMainWindow):
         self.last_open_try = 0.0
         self.rate_count, self.rate_t, self.rate = 0, time.time(), 0.0
         self.att = Attitude()
+        self.cal = Calibration()
         self.off = [0.0, 0.0, 0.0]          # degrees, raw (before SIGN)
         self.cal_buf, self.gyro_bias, self.calibrating = [], np.zeros(3), True
         self.still = False
@@ -390,7 +540,8 @@ class Dashboard(QtWidgets.QMainWindow):
                    "border-radius:6px;padding:6px 12px;}QPushButton:hover{background:#2a3142;}")
         for text, fn in (("Zero attitude (Z)", self.zero_attitude),
                          ("Zero yaw (Y)", self.zero_yaw),
-                         ("Re-cal gyro (G)", self.start_cal)):
+                         ("Re-cal gyro (G)", self.start_cal),
+                         ("Re-zero airspeed (A)", self.cal.reset)):
             b = QtWidgets.QPushButton(text)
             b.setStyleSheet(btn_css)
             b.clicked.connect(fn)
@@ -472,6 +623,7 @@ class Dashboard(QtWidgets.QMainWindow):
         self.n = 0
         self.last_t = None
         self.start_cal()
+        self.cal.reset()
         self.reset_path()
 
     def reset_path(self):
@@ -496,6 +648,8 @@ class Dashboard(QtWidgets.QMainWindow):
             self.zero_yaw()
         elif k == "g":
             self.start_cal()
+        elif k == "a":
+            self.cal.reset()
         elif k == "c":
             self.reset_path()
         elif k == "r" and self.replay is not None:
@@ -556,6 +710,7 @@ class Dashboard(QtWidgets.QMainWindow):
                 self.push(batch)
                 batch = []
                 self.reset_state()
+            self.cal.apply(row)    # raw -> airspeed and battery, before anything reads them
             self.process(row)
             batch.append(row)
             self.last_t = row[0]
@@ -643,10 +798,14 @@ class Dashboard(QtWidgets.QMainWindow):
         else:
             msg, receiving = f"{self.port} @ {self.baud}   |   {self.rate:.0f} Hz", True
         if receiving:
+            if self.cal.zeroing:
+                msg += "   |   zeroing airspeed - pitot open, no draft"
             if self.calibrating:
                 msg += "   |   calibrating gyro - keep still"
             elif self.still:
                 msg += "   |   still (yaw held, bias tracking)"
+        if self.cal.note:
+            msg += f"   |   {self.cal.note}"
         self.status.setText(msg)
 
         r = self.latest
@@ -660,11 +819,12 @@ class Dashboard(QtWidgets.QMainWindow):
         self.c_temp.set(r[I["bme_temp_c"]], "{:.1f}")
         self.c_hum.set(r[I["hum_pct"]], "{:.0f}")
         self.c_ptemp.set(r[I["pitot_temp_c"]], "{:.1f}")
-        self.c_dp.set(r[I["dp_pa"]], "{:.1f}")
+        raw_dp, v_mv, a_mv = r[I["dp_raw_pa"]], r[I["batt_v_sig_mv"]], r[I["batt_a_sig_mv"]]
+        self.c_dp.set(r[I["dp_pa"]], "{:.1f}", f"raw {raw_dp:.1f} Pa" if math.isfinite(raw_dp) else "")
         ax, ay, az = r[I["ax_g"]], r[I["ay_g"]], r[I["az_g"]]
         self.c_g.set(math.sqrt(ax * ax + ay * ay + az * az), "{:.2f}")
-        self.c_batt_v.set(r[I["batt_v"]], "{:.2f}")
-        self.c_batt_a.set(r[I["batt_a"]], "{:.1f}")
+        self.c_batt_v.set(r[I["batt_v"]], "{:.2f}", f"signal {v_mv:.0f} mV" if math.isfinite(v_mv) else "")
+        self.c_batt_a.set(r[I["batt_a"]], "{:.1f}", f"signal {a_mv:.0f} mV" if math.isfinite(a_mv) else "")
         for c, col, f in ((self.c_ax, "ax_g", "{:+.3f}"), (self.c_ay, "ay_g", "{:+.3f}"),
                           (self.c_az, "az_g", "{:+.3f}"), (self.c_gx, "gx_dps", "{:+.1f}"),
                           (self.c_gy, "gy_dps", "{:+.1f}"), (self.c_gz, "gz_dps", "{:+.1f}")):

@@ -4,11 +4,10 @@
 #include <stdbool.h>
 #include "driver/i2c_master.h"
 
-// Register the MS4525DO on an initialized shared I2C bus before calibration.
+// Register the MS4525DO on an initialized shared I2C bus; warns if it does not answer.
 bool airspeedSetup(i2c_master_bus_handle_t bus);
-void calibrateAirspeed(void);
-// press_hpa sets air density; pass NAN to use sea-level standard pressure.
-// dp_pa is the filtered, zeroed reading before the wind-tunnel calibration.
-bool readAirspeed(float press_hpa, float *dp_pa, float *temp_c, float *airspeed_ms);
+// Average of up to 8 fresh readings: differential pressure in Pa and sensor temperature.
+// dp_pa is not zeroed, filtered or calibrated; the ground station does all of that.
+bool readAirspeed(float *dp_pa, float *temp_c);
 
 #endif /* V1_AIRSPEED_H */

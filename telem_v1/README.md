@@ -8,17 +8,16 @@ is included under `components/bme68x/` for sensor compensation.
 The matching `.c`/`.h` pairs in `main/` handle:
 
 - `gyro`: LSM6DSO gyroscope and accelerometer, probing 0x6B then 0x6A.
-- `airspeed`: MS4525DO at 0x28, startup zero calibration and filtered,
-  wind-tunnel-calibrated airspeed.
+- `airspeed`: MS4525DO at 0x28. Logs the raw differential pressure (averaged, not
+  zeroed or calibrated) and the sensor temperature.
 - `bme680`: temperature, humidity, pressure and altitude relative to startup,
   probing 0x77 then 0x76. Altitude uses the same pressure sample as the CSV row.
 - `sdcard`: FAT-formatted SD card over SPI, CSV file creation and periodic sync.
-- `power`: battery voltage (GPIO36) and current (GPIO39) on ADC1, using
-  calibrated signal volts scaled by 10.11 and 36.364 respectively. That calibration
-  was measured on the C6 and must be re-checked on the ESP32. The logger calls
-  `powerRead()` once per row and writes the instantaneous values to the `batt_v`
-  and `batt_a` columns. `powerReadAverage()` (50-sample, nominal 5-second rolling
-  average) is available but not used by the logger.
+- `power`: battery voltage (GPIO36) and current (GPIO39) on ADC1. The logger calls
+  `powerRead()` once per row and writes the instantaneous pin signal in millivolts
+  (converted with the chip's eFuse ADC calibration) and the raw 12-bit ADC counts.
+  `powerReadAverage()` (50-sample, nominal 5-second rolling average of the signal)
+  is available but not used by the logger.
 - `wireless`: sends each CSV row to the SiK telemetry radio on UART1 at 57600 baud
   (TX/RX pins in `pins.h`). Not wired: `ENABLE_RADIO` is 0 in `main.c`, so radio
   setup is skipped. Log messages stay on the USB console.
@@ -44,18 +43,30 @@ logger. If a sensor is unreliable, drop the I2C devices back to 100 kHz. These
 assignments still need checking against the physical board and wiring before
 hardware testing.
 
-During startup keep the board still, and leave the pitot open but out of any
-draft. Do not cover it: that creates a pressure transient, not a true zero. The
-calibration log reports the zero offset and its noise, and warns above 1.5 Pa rms.
+### Raw logging; calibration on the ground station
 
-The airspeed conversion assumes a -1 to +1 psi sensor. Each loop averages up to
-8 fresh readings within 8 ms, then applies a 0.25 low-pass filter. The filtered
-value is mapped through the PennAiR wind-tunnel calibration table in `airspeed.c`,
-reduced by a 1.5 Pa soft deadband, and converted using air density from the
-BME680 pressure (101325 Pa if unavailable) and the pitot temperature. After 10 s
-within 4 Pa of zero, the zero offset slowly re-adjusts to cancel drift. The
-`dp_pa` column is the filtered value before the calibration table. Redo the
-wind-tunnel sweep if the probe, tubing or mounting changes.
+The logger records raw sensor values, and `ground_station/dashboard.py` applies the
+airspeed and battery calibration, live and on replay. Its settings (wind-tunnel table,
+filter, divider ratio, amps per volt) are at the top of that file. A calibration
+change therefore also applies to logs that are already recorded. The ESP32 keeps only
+the sensor conversions that need data the ground never sees: the MS4525DO counts to Pa
+(assuming a -1 to +1 psi sensor) with up to 8 fresh readings averaged within 8 ms per
+loop, and ADC counts to millivolts using the chip's eFuse calibration.
+
+The dashboard zeroes the airspeed from the first 40 rows (about 2 s) of a log, so
+after power-on keep the board still, and leave the pitot open but out of any draft.
+Do not cover it: that creates a pressure transient, not a true zero. Live, the zero is
+taken when the dashboard connects or when **A** is pressed. The dashboard shows the
+zero offset and its noise, and warns above 1.5 Pa rms. After the zero it applies a
+0.25 low-pass filter, maps the value through the PennAiR wind-tunnel calibration table,
+subtracts a 1.5 Pa soft deadband, and converts using air density from the BME680
+pressure (101325 Pa if unavailable) and the pitot temperature. After 10 s within 4 Pa
+of zero, the zero offset slowly re-adjusts to cancel drift. Redo the wind-tunnel sweep
+if the probe, tubing or mounting changes.
+
+Battery voltage is the voltage signal x 10.11. Current is the current signal x 19.65 A/V,
+or 0 A at or below 150 mV (the ESP32 ADC floor). The voltage calibration was measured
+on the C6 and must be re-checked on the ESP32.
 
 The IMU keeps the original 104 Hz, +/-2 g and 250 degrees/s settings. The BME680
 uses 1x oversampling, filter coefficient 3 and no gas heater. Its readings are
@@ -64,8 +75,12 @@ non-blocking: each row reports the measurement started on the previous loop.
 The logger has a nominal 50 ms period. Actual throughput depends on sensor and
 SD I/O latency. Missing or failed sensor readings are written as `nan`.
 Console output contains CSV rows plus ESP-IDF diagnostic messages. SD files are
-named `log_001.csv` through `log_999.csv`, with the original CSV columns and
-units plus `batt_v` (V) and `batt_a` (A) at the end, and are synced approximately once a second. If all filenames are used,
+named `log_001.csv` through `log_999.csv` and are synced approximately once a second.
+Their columns are `t_ms`, `alt_m`, `press_hpa`, `bme_temp_c`, `hum_pct`, `dp_raw_pa`
+(Pa, not zeroed), `pitot_temp_c`, `ax_g`/`ay_g`/`az_g`, `gx_dps`/`gy_dps`/`gz_dps`,
+`batt_v_sig_mv` and `batt_a_sig_mv` (pin signal, mV), and `batt_v_adc` and
+`batt_a_adc` (raw ADC counts). Logs from older firmware have calibrated `dp_pa`,
+`airspeed_ms`, `batt_v` and `batt_a` columns instead; the dashboard reads both. If all filenames are used,
 SD logging is disabled; existing files are kept. Mount failures never trigger
 formatting, and write/sync failures stop SD logging while console output continues.
 
@@ -97,7 +112,7 @@ idf.py set-target esp32
 idf.py build
 ```
 
-`sdkconfig.defaults` supplies the target and a 1 kHz FreeRTOS tick for the 10 ms
-calibration delays and 50 ms logging period. An existing `sdkconfig` takes
+`sdkconfig.defaults` supplies the target and a 1 kHz FreeRTOS tick for the 50 ms
+logging period. An existing `sdkconfig` takes
 precedence over defaults; check these settings when reusing an older build.
 Building needs no sensor-library downloads because the Bosch source is local.

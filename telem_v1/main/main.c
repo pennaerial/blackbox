@@ -1,23 +1,31 @@
 /*
  * ESP32 logger: BME680, MS4525DO, LSM6DSO, battery power module, and an SPI SD card.
  * Pin assignments are in pins.h.
- * Rows hold raw sensor values; the ground station (ground_station/dashboard.py) zeroes and
- * calibrates airspeed and scales battery voltage and current. It zeroes the airspeed from the
- * first ~2 s of rows, so after power-on keep the board still and leave the pitot OPEN but out
- * of any draft. Covering it creates a pressure transient, not a true zero.
+ *
+ * Startup: the logger brings up its own WiFi network and waits for the laptop
+ * (ground_station/dashboard.py --wifi). It does NOT log at power-on: each "start new log"
+ * from the laptop closes the open log and starts the next log_NNN.csv. The laptop also runs
+ * the IMU mounting calibration (saved as cal_NNN.txt) and can turn WiFi off until reset.
+ *
+ * Rows hold raw sensor values; the ground station zeroes and calibrates airspeed and scales
+ * battery voltage and current. It zeroes the airspeed from the first ~2 s of rows it sees, so
+ * keep the pitot OPEN but out of any draft then. Covering it is a pressure transient, not a zero.
  */
 
 #include "main.h"
 #include "gyro.h"
 #include "airspeed.h"
 #include "bme680.h"
+#include "imucal.h"
 #include "sdcard.h"
 #include "power.h"
+#include "wifilink.h"
 #include "wireless.h"
 #include "pins.h"
 
 #include <inttypes.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include "driver/i2c_master.h"
 #include "esp_log.h"
@@ -29,6 +37,8 @@
 #define RADIO_UART UART_NUM_1 // Not the console UART; any pins via pins.h.
 #define ENABLE_RADIO 0        // 1 = send CSV rows to the SiK radio; 0 = skip it (bench testing).
 #define SD_PIN_TEST 0        // 1 = TEMPORARY wiring test instead of the logger; set back to 0 after.
+#define LOG_IF_WIFI_FAILS 1   // 1 = start a log at boot if WiFi cannot start, since nothing else can.
+#define STATUS_MS 1000        // How often the laptop gets a #STATUS line.
 
 static const char *TAG = "logger";
 
@@ -63,6 +73,78 @@ static void sdPinTest(void)
     }
 }
 #endif
+
+// Sends a '#' message to the laptop and echoes it on the USB console.
+__attribute__((format(printf, 1, 2))) static void reply(const char *fmt, ...)
+{
+    static char msg[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    wifiLinkSendLine(msg);
+    ESP_LOGI(TAG, "%s", msg);
+}
+
+// Each call closes the open log, if any, and starts the next log_NNN.csv.
+static void startLog(void)
+{
+    const char *err = sdStartLog();
+    if (err != NULL)
+        reply("#ERR,LOG,%s", err);
+    else
+        reply("#LOG,%s", sdLogName());
+}
+
+static void handleCommand(const wifi_cmd_t *cmd, bool imuOk)
+{
+    switch (cmd->type)
+    {
+    case WIFI_CMD_LOG:
+        startLog();
+        break;
+    case WIFI_CMD_CAL_LEVEL:
+    case WIFI_CMD_CAL_PITCH:
+    {
+        cal_pose_t pose = cmd->type == WIFI_CMD_CAL_LEVEL ? CAL_POSE_LEVEL : CAL_POSE_PITCH;
+        if (!imuOk)
+        {
+            reply("#ERR,CAL,IMU not set up");
+            break;
+        }
+        imuCalBegin(pose);
+        reply("#CAL,%s,MEASURING,%d", imuCalPoseName(pose), IMU_CAL_SAMPLES);
+        break;
+    }
+    case WIFI_CMD_CAL_SAVE:
+    {
+        static char text[1200];
+        if (!imuCalFormatFile(text, sizeof(text), cmd->value, sdLogName(),
+                              esp_timer_get_time() / 1000))
+        {
+            reply("#ERR,CAL,measure both poses first");
+            break;
+        }
+        char name[16];
+        const char *err = sdWriteCalibration(text, name, sizeof(name));
+        if (err != NULL)
+            reply("#ERR,CAL,%s", err);
+        else
+            reply("#CALSAVED,%s", name);
+        break;
+    }
+    }
+}
+
+// #STATUS,t_ms,<log name or ->,sd,imu,airspeed,bme,power (1 = working, 0 = not)
+static void sendStatus(int64_t nowMs, bool imuOk, bool airspeedOk, bool bmeOk, bool powerOk)
+{
+    const char *log = sdLogName();
+    char msg[96];
+    snprintf(msg, sizeof(msg), "#STATUS,%" PRId64 ",%s,%d,%d,%d,%d,%d", nowMs,
+             log != NULL ? log : "-", sdMounted(), imuOk, airspeedOk, bmeOk, powerOk);
+    wifiLinkSendLine(msg);
+}
 
 void app_main(void)
 {
@@ -102,9 +184,9 @@ void app_main(void)
         ESP_LOGE(TAG, "I2C setup failed: %s; sensor fields will be NaN", esp_err_to_name(err));
     }
 
-    bool sdOk = sdSetup();
-    if (!sdOk)
-        ESP_LOGW(TAG, "SD card NOT available (logging to console only)");
+    // Mount only: a log starts when the laptop asks for one (or below if WiFi fails).
+    if (!sdSetup())
+        ESP_LOGW(TAG, "SD card NOT available; the mount is retried when a log is started");
 
     bool powerOk = powerSetup();
     if (!powerOk)
@@ -124,13 +206,28 @@ void app_main(void)
     if (!radioOk)
         ESP_LOGW(TAG, "Radio UART NOT set up: %s", esp_err_to_name(err));
 #else
-    ESP_LOGI(TAG, "Radio disabled (ENABLE_RADIO = 0); CSV goes to USB console and SD only");
+    ESP_LOGI(TAG, "Radio disabled (ENABLE_RADIO = 0)");
 #endif
 
+    if (!wifiLinkStart())
+    {
+#if LOG_IF_WIFI_FAILS
+        ESP_LOGE(TAG, "WiFi failed, so nothing can start a log: starting one now");
+        startLog();
+#else
+        ESP_LOGE(TAG, "WiFi failed; no log will be started");
+#endif
+    }
+
     TickType_t lastLoop = xTaskGetTickCount();
+    int64_t lastStatus = 0;
     for (;;)
     {
         xTaskDelayUntil(&lastLoop, pdMS_TO_TICKS(LOOP_MS));
+
+        wifi_cmd_t cmd;
+        while (wifiLinkGetCommand(&cmd))
+            handleCommand(&cmd, imuOk);
 
         float alt = NAN, press = NAN, bmeT = NAN, hum = NAN;
         if (bmeOk)
@@ -158,16 +255,32 @@ void app_main(void)
         }
 
         // Column order must match the header in sdcard.c and LOG_COLS in dashboard.py.
+        int64_t nowMs = esp_timer_get_time() / 1000;
         char line[256];
         snprintf(line, sizeof(line),
                  "%" PRIu64 ",%.2f,%.2f,%.2f,%.1f,%.2f,%.1f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.0f,%.0f,%.0f,%.0f",
-                 (uint64_t)(esp_timer_get_time() / 1000), alt, press, bmeT, hum, dp, pitotT,
+                 (uint64_t)nowMs, alt, press, bmeT, hum, dp, pitotT,
                  ax, ay, az, gx, gy, gz, battVmV, battAmV, battVAdc, battAAdc);
         puts(line);
         if (radioOk)
             wirelessSendLine(line);
+        wifiLinkSendLine(line);
+        if (!sdLogLine(line))
+            reply("#ERR,LOG,SD write failed; logging stopped");
 
-        if (sdOk)
-            sdOk = sdLogLine(line);
+        const float imu[6] = {ax, ay, az, gx, gy, gz};
+        cal_pose_t pose;
+        if (imuCalAdd(imu, &pose))
+        {
+            char result[256];
+            imuCalFormatResult(pose, result, sizeof(result));
+            reply("%s", result);
+        }
+
+        if (nowMs - lastStatus >= STATUS_MS)
+        {
+            lastStatus = nowMs;
+            sendStatus(nowMs, imuOk, airspeedOk, bmeOk, powerOk);
+        }
     }
 }

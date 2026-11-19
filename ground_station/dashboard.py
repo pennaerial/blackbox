@@ -6,13 +6,20 @@ ESP32 sensor dashboard
   - Scrolling plots for airspeed, altitude, accel, gyro
 
 Run from ground_station/:
-       uv run dashboard.py            (auto-detects the port)
+       uv run dashboard.py --wifi     (field setup: join the logger's "blackbox" WiFi first. Adds
+                                       start-new-log, IMU calibration and WiFi-off controls)
+       uv run dashboard.py            (USB: auto-detects the port)
        uv run dashboard.py COM5       (or pass the port yourself)
        uv run dashboard.py COM7 --baud 57600
                                       (through the SiK telemetry radio instead of USB)
-       uv run dashboard.py --replay log_007.csv [--speed 2]
+       uv run dashboard.py --replay log_007.csv [--speed 2] [--cal cal_002.txt]
                                       (play back an SD card log; bare names are looked up in logs/,
-                                       and --replay with no name plays the newest log there)
+                                       and --replay with no name plays the newest log there.
+                                       --cal draws the aircraft using that IMU mounting calibration)
+
+The logger does not log at power-on. Over WiFi, "Start new log" closes the open log and starts the
+next log_NNN.csv; press it again to throw away a false start. Closing this window or losing the
+WiFi link leaves the logger's WiFi on; only "Turn WiFi off" turns it off, until a power cycle.
 
 Without uv: pip install pyserial pyqtgraph PySide6 PyOpenGL numpy, then python dashboard.py
 
@@ -37,7 +44,10 @@ x/y, baro altitude for z. Heading drifts and wind is ignored, so treat it as a s
 """
 import argparse
 import math
+import queue
+import socket
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -66,6 +76,18 @@ PATH_GRID_M = 400       # size of the ground grid in the 3D path tab (m)
 PATH_STEP_M = 0.5       # store a path point after moving this far (m)
 PATH_MAX_POINTS = 20000  # halve the stored path when it grows past this
 PATH_PLANE_SCALE = 2.0  # size of the plane marker on the path (about 7 m wingspan)
+
+# WiFi link to the logger (see telem_v1/main/wifilink.h)
+WIFI_HOST = "192.168.4.1"   # the logger's address on its own network
+WIFI_PORT = 3333            # WIFI_LINK_PORT
+WIFI_SSID = "blackbox"      # WIFI_LINK_SSID, shown as a hint while not connected
+LINK_SILENT_S = 5.0         # reconnect if nothing arrives for this long (status comes every 1 s)
+STATUS_STALE_S = 3.0        # logger status older than this is shown as unknown
+
+# IMU mounting calibration checks (the wizard warns; it does not block)
+CAL_STILL_GYRO_SD = 1.0     # deg/s: more spread than this in a pose means the aircraft moved
+CAL_STILL_ACC_SD = 0.02     # g
+CAL_MIN_PITCH_DEG = 15.0    # the nose-up pose must differ from level by at least this
 
 # If the plane tilts the wrong way, flip the sign of that axis here (roll, pitch, yaw).
 SIGN = (1, 1, 1)
@@ -236,6 +258,156 @@ class Calibration:
         return True
 
 
+# ======================= IMU mounting calibration =======================
+# The logger saves the raw accelerometer/gyro means of two still poses (cal_NNN.txt); the
+# rotation from IMU axes to aircraft axes is worked out here.
+BODY_POS = ("nose", "left wing", "up")      # aircraft axes as in remap(): x, y, z
+BODY_NEG = ("tail", "right wing", "down")
+
+
+def unit(v):
+    v = np.asarray(v, dtype=float)
+    return v / np.linalg.norm(v)
+
+
+def pose_angle_deg(a, b):
+    """Angle between two accelerometer readings, i.e. how far the aircraft was tilted."""
+    return math.degrees(math.acos(float(np.clip(unit(a).dot(unit(b)), -1.0, 1.0))))
+
+
+def mount_rotation(level_acc, pitch_acc):
+    """Rotation R with aircraft = R @ imu (x = nose, y = left wing, z = up, as in remap()).
+    At rest the accelerometer reads +1 g straight up, so the level pose gives the up axis.
+    Raising the nose tips that reading toward the nose, so the part of the nose-up reading
+    that is not along 'up' gives the nose axis. The angle itself does not matter."""
+    z = unit(level_acc)
+    p = np.asarray(pitch_acc, dtype=float)
+    x = unit(p - p.dot(z) * z)
+    return np.vstack([x, np.cross(z, x), z])
+
+
+def describe_mount(R):
+    """Where each IMU axis points on the aircraft, e.g. 'IMU +x -> nose (4 deg off)'."""
+    lines = []
+    for i, name in enumerate("xyz"):
+        col = R[:, i]                       # IMU axis i, in aircraft axes
+        j = int(np.argmax(np.abs(col)))
+        where = BODY_POS[j] if col[j] > 0 else BODY_NEG[j]
+        off = math.degrees(math.acos(min(1.0, abs(float(col[j])))))
+        lines.append(f"IMU +{name} -> {where} ({off:.0f} deg off)")
+    return "\n".join(lines)
+
+
+def read_cal_file(path):
+    """A cal_NNN.txt from the logger as {key: [numbers]} (text values stay strings)."""
+    vals = {}
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, *rest = line.split(",")
+        try:
+            vals[key] = [float(x) for x in rest]
+        except ValueError:
+            vals[key] = rest
+    return vals
+
+
+def rotation_from_cal_file(path):
+    v = read_cal_file(path)
+    return mount_rotation(v["level_acc_g"], v["pitch_acc_g"])
+
+
+# ======================= WiFi link =======================
+class WifiLink:
+    """TCP link to the logger over its own WiFi network. A background thread connects,
+    reconnects after a drop and queues received lines; the GUI thread calls lines() and send().
+    Losing the link or closing the dashboard leaves the logger's WiFi on."""
+
+    def __init__(self, host, port=WIFI_PORT):
+        self.host, self.port = host, port
+        self.rx = queue.Queue()
+        self.lock = threading.Lock()
+        self.sock = None
+        self.stopped = False
+        threading.Thread(target=self.run, daemon=True).start()
+
+    @property
+    def connected(self):
+        return self.sock is not None
+
+    def run(self):
+        while not self.stopped:
+            try:
+                s = socket.create_connection((self.host, self.port), timeout=2.0)
+            except OSError:
+                time.sleep(1.0)
+                continue
+            s.settimeout(1.0)
+            with self.lock:
+                self.sock = s
+            self.read_until_closed(s)
+            with self.lock:
+                self.sock = None
+            try:
+                s.close()
+            except OSError:
+                pass
+
+    def read_until_closed(self, s):
+        buf, last = b"", time.time()
+        while not self.stopped:
+            try:
+                data = s.recv(4096)
+            except socket.timeout:
+                if time.time() - last > LINK_SILENT_S:
+                    return              # silent link (walked out of range): reconnect
+                continue
+            except OSError:
+                return
+            if not data:
+                return
+            last = time.time()
+            *lines, buf = (buf + data).split(b"\n")
+            for line in lines:
+                self.rx.put(line)
+            if len(buf) > 10000:        # never a real line: drop garbage
+                buf = b""
+
+    def lines(self):
+        out = []
+        while True:
+            try:
+                out.append(self.rx.get_nowait())
+            except queue.Empty:
+                return out
+
+    def send(self, text):
+        """Send one command line; False if not connected."""
+        with self.lock:
+            if self.sock is None:
+                return False
+            try:
+                self.sock.sendall((text + "\n").encode("ascii"))
+                return True
+            except OSError:
+                return False
+
+    def stop(self):
+        """Stop reconnecting (after WIFI,OFF). The logger closes the connection itself."""
+        self.stopped = True
+
+    def close(self):
+        """Disconnect without turning the logger's WiFi off (dashboard closing)."""
+        self.stopped = True
+        with self.lock:
+            if self.sock is not None:
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+
 def find_port(arg=None):
     if arg:
         return arg
@@ -402,14 +574,281 @@ class Card(QtWidgets.QFrame):
         self.sub.setText(sub)
 
 
+# ======================= IMU calibration wizard =======================
+CAL_INTRO = (
+    "This measures how the IMU sits in the aircraft, so its readings can be turned into "
+    "aircraft axes after the flight. The IMU can be mounted at any angle.\n\n"
+    "You need the aircraft powered on, about a minute, and a ruler.\n"
+    "  1. Hold the aircraft level and still.\n"
+    "  2. Raise the nose and hold it still.\n"
+    "  3. Enter where the IMU is relative to the centre of gravity (CG).\n\n"
+    "The logger saves the result on its SD card as cal_NNN.txt. A log that is recording keeps "
+    "recording during calibration.")
+CAL_LEVEL = (
+    "Hold the aircraft level: fuselage horizontal and wings level, as in straight and level "
+    "flight. Keep it completely still, press Measure, and hold it there for about 3 seconds.")
+CAL_PITCH = (
+    "Raise the nose about 30-45 degrees and keep the wings level. Resting the tail on the "
+    "ground is fine, and the angle does not need to be exact, but it must be nose UP, not "
+    "down. Keep it still, press Measure, and hold it there for about 3 seconds.")
+CAL_OFFSET = (
+    "Measure where the IMU is relative to the aircraft's CG, along the aircraft's axes. "
+    "A ruler measurement to about half a centimetre is enough. Use 0 for an axis where "
+    "the IMU is level with the CG.")
+
+
+class CalWizard(QtWidgets.QDialog):
+    """Step-by-step IMU mounting calibration. The logger averages the IMU in each pose and
+    saves the result; this window guides the steps and checks the measurements."""
+    REPLY_TIMEOUT_MS = 8000
+
+    def __init__(self, dash):
+        super().__init__(dash)
+        self.dash = dash
+        self.setWindowTitle("IMU mounting calibration")
+        self.setMinimumWidth(560)
+        self.setStyleSheet("QDialog{background:#1b1f27;} QLabel{color:#c7ccd6;font-size:13px;}")
+        self.poses = {}          # "LEVEL"/"PITCH" -> {"acc", "gyro", "acc_sd", "gyro_sd"}
+        self.waiting = None      # reply awaited: "LEVEL", "PITCH" or "SAVE"
+        self.timer = QtCore.QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.no_reply)
+
+        lay = QtWidgets.QVBoxLayout(self)
+        self.stack = QtWidgets.QStackedWidget()
+        lay.addWidget(self.stack, 1)
+        self.stack.addWidget(self.page("Calibrate the IMU mounting", CAL_INTRO)[0])
+        self.measure_btn, self.result = {}, {}
+        for pose, title, text in (("LEVEL", "Step 1 of 3: hold the aircraft level", CAL_LEVEL),
+                                  ("PITCH", "Step 2 of 3: raise the nose", CAL_PITCH)):
+            page, box = self.page(title, text)
+            btn = QtWidgets.QPushButton("Measure")
+            btn.clicked.connect(lambda _=False, p=pose: self.measure(p))
+            res = QtWidgets.QLabel("")
+            res.setWordWrap(True)
+            box.addWidget(btn)
+            box.addWidget(res)
+            box.addStretch(1)
+            self.measure_btn[pose], self.result[pose] = btn, res
+            self.stack.addWidget(page)
+        self.stack.addWidget(self.offset_page())
+        page, box = self.page("Calibration saved", "")
+        self.done_label = box.itemAt(1).widget()
+        self.stack.addWidget(page)
+
+        nav = QtWidgets.QHBoxLayout()
+        self.back_btn = QtWidgets.QPushButton("Back")
+        self.next_btn = QtWidgets.QPushButton("Next")
+        close_btn = QtWidgets.QPushButton("Close")
+        self.back_btn.clicked.connect(lambda: self.go(self.stack.currentIndex() - 1))
+        self.next_btn.clicked.connect(self.next_clicked)
+        close_btn.clicked.connect(self.close)
+        nav.addWidget(close_btn)
+        nav.addStretch(1)
+        nav.addWidget(self.back_btn)
+        nav.addWidget(self.next_btn)
+        lay.addLayout(nav)
+        self.update_nav()
+
+    def page(self, title, text):
+        page = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(page)
+        head = QtWidgets.QLabel(title)
+        head.setStyleSheet("color:#e6e9ef;font-size:17px;font-weight:600;")
+        body = QtWidgets.QLabel(text)
+        body.setWordWrap(True)
+        box.addWidget(head)
+        box.addWidget(body)
+        return page, box
+
+    def offset_page(self):
+        page, box = self.page("Step 3 of 3: IMU position from the CG", CAL_OFFSET)
+        form = QtWidgets.QFormLayout()
+        self.offset = []
+        for axis, hint in (("x", "forward of the CG (+), behind it (-)"),
+                           ("y", "toward the left wing (+), toward the right (-)"),
+                           ("z", "above the CG (+), below it (-)")):
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(-200.0, 200.0)
+            spin.setDecimals(1)
+            spin.setSingleStep(0.5)
+            spin.setSuffix(" cm")
+            spin.valueChanged.connect(self.update_distance)
+            label = QtWidgets.QLabel(f"{axis}: {hint}")
+            form.addRow(label, spin)
+            self.offset.append(spin)
+        box.addLayout(form)
+        self.distance = QtWidgets.QLabel("")
+        self.mount = QtWidgets.QLabel("")
+        self.mount.setStyleSheet("color:#8b93a1;font-family:Consolas,Menlo,monospace;")
+        self.save_status = QtWidgets.QLabel("")
+        self.save_status.setWordWrap(True)
+        for w in (self.distance, self.mount, self.save_status):
+            box.addWidget(w)
+        box.addStretch(1)
+        self.update_distance()
+        return page
+
+    # ---------- steps ----------
+    def go(self, i):
+        self.stack.setCurrentIndex(max(0, min(i, self.stack.count() - 1)))
+        if self.stack.currentIndex() == 3:
+            R = self.rotation()
+            self.mount.setText("IMU mounting found:\n" + describe_mount(R) if R is not None else "")
+        self.update_nav()
+
+    def next_clicked(self):
+        i = self.stack.currentIndex()
+        if i == 3:
+            self.save()
+        elif i == self.stack.count() - 1:
+            self.close()
+        else:
+            self.go(i + 1)
+
+    def update_nav(self):
+        i, busy = self.stack.currentIndex(), self.waiting is not None
+        last = self.stack.count() - 1
+        self.back_btn.setVisible(0 < i < last)
+        self.back_btn.setEnabled(not busy)
+        self.next_btn.setText({3: "Save to SD card", last: "Done"}.get(i, "Next"))
+        ok = {1: "LEVEL" in self.poses, 2: self.pitch_ok(), 3: self.rotation() is not None}
+        self.next_btn.setEnabled(not busy and ok.get(i, True))
+        for btn in self.measure_btn.values():
+            btn.setEnabled(not busy)
+
+    def measure(self, pose):
+        if not self.dash.link.send(f"CAL,{pose}"):
+            self.result[pose].setText("Not connected to the logger.")
+            return
+        self.poses.pop(pose, None)
+        self.wait_for(pose)
+        self.result[pose].setText("Asking the logger to measure...")
+
+    def save(self):
+        x, y, z = (s.value() for s in self.offset)
+        if not self.dash.link.send(f"CAL,SAVE,{x:.2f},{y:.2f},{z:.2f}"):
+            self.save_status.setText("Not connected to the logger.")
+            return
+        self.wait_for("SAVE")
+        self.save_status.setText("Saving on the logger...")
+
+    def wait_for(self, what):
+        self.waiting = what
+        self.timer.start(self.REPLY_TIMEOUT_MS)
+        self.update_nav()
+
+    def no_reply(self):
+        label = self.save_status if self.waiting == "SAVE" else self.result.get(self.waiting)
+        self.waiting = None
+        if label is not None:
+            label.setText("No answer from the logger. Check the WiFi connection and try again.")
+        self.update_nav()
+
+    # ---------- replies from the logger ----------
+    def on_message(self, parts):
+        """parts: a '#' line from the logger without the '#', split on commas."""
+        kind = parts[0]
+        if kind == "CAL" and len(parts) >= 3 and parts[1] in self.result:
+            pose = parts[1]
+            if parts[2] == "MEASURING":
+                self.result[pose].setText("Measuring... keep it still (about 3 s).")
+                self.timer.start(self.REPLY_TIMEOUT_MS)
+            elif parts[2] == "DONE" and len(parts) >= 16:
+                v = [float(p) for p in parts[4:16]]
+                self.poses[pose] = {"acc": v[0:3], "gyro": v[3:6], "acc_sd": v[6:9],
+                                    "gyro_sd": v[9:12]}
+                self.finish_wait()
+                self.show_pose(pose)
+        elif kind == "CALSAVED" and len(parts) >= 2:
+            self.finish_wait()
+            R = self.rotation()
+            self.done_label.setText(
+                f"Saved as {parts[1]} on the logger's SD card.\n\n"
+                f"IMU mounting:\n{describe_mount(R)}\n\n"
+                "The dashboard now draws the aircraft using this calibration. For post-flight "
+                f"analysis, copy {parts[1]} off the card along with the logs.")
+            self.dash.apply_rotation(R)
+            self.go(self.stack.count() - 1)
+        elif kind == "ERR":
+            what = self.waiting
+            self.finish_wait()
+            label = self.save_status if what == "SAVE" else self.result.get(what, self.save_status)
+            label.setText("Logger: " + ",".join(parts[2:]))
+
+    def finish_wait(self):
+        self.waiting = None
+        self.timer.stop()
+        self.update_nav()
+
+    # ---------- checks ----------
+    def still_note(self, p):
+        g, a = max(p["gyro_sd"]), max(p["acc_sd"])
+        if g > CAL_STILL_GYRO_SD or a > CAL_STILL_ACC_SD:
+            return (f"\nWARNING: it moved during the measurement (gyro spread {g:.1f} deg/s, "
+                    f"accel spread {a:.3f} g). Hold it steadier and measure again.")
+        return "\nHeld still: yes."
+
+    def show_pose(self, pose):
+        p = self.poses[pose]
+        mag = float(np.linalg.norm(p["acc"]))
+        text = "Done."
+        if abs(mag - 1.0) > 0.1:
+            text += f"\nWARNING: the accelerometer reads {mag:.2f} g at rest, expected about 1 g."
+        if pose == "LEVEL":
+            tilt = pose_angle_deg(p["acc"], (0, 0, 1))
+            text += f"\nThe IMU's z axis is {tilt:.0f} deg from vertical."
+            if "PITCH" in self.poses:
+                self.show_pitch_check()
+        else:
+            text += self.pitch_text()
+        self.result[pose].setText(text + self.still_note(p))
+        self.update_nav()
+
+    def show_pitch_check(self):
+        p = self.poses["PITCH"]
+        self.result["PITCH"].setText("Done." + self.pitch_text() + self.still_note(p))
+
+    def pitch_text(self):
+        if "LEVEL" not in self.poses:
+            return "\nMeasure the level pose (step 1) first."
+        angle = pose_angle_deg(self.poses["LEVEL"]["acc"], self.poses["PITCH"]["acc"])
+        if angle < CAL_MIN_PITCH_DEG:
+            return (f"\nThe nose is only {angle:.0f} deg from level. Raise it more (30-45 deg) "
+                    "and measure again.")
+        return f"\nNose raised about {angle:.0f} deg from level."
+
+    def pitch_ok(self):
+        return ("LEVEL" in self.poses and "PITCH" in self.poses and
+                pose_angle_deg(self.poses["LEVEL"]["acc"], self.poses["PITCH"]["acc"])
+                >= CAL_MIN_PITCH_DEG)
+
+    def rotation(self):
+        if not self.pitch_ok():
+            return None
+        return mount_rotation(self.poses["LEVEL"]["acc"], self.poses["PITCH"]["acc"])
+
+    def update_distance(self):
+        x, y, z = (s.value() for s in self.offset)
+        self.distance.setText(f"Distance from the CG: {math.sqrt(x * x + y * y + z * z):.1f} cm")
+
+
 # ======================= Main window =======================
 class Dashboard(QtWidgets.QMainWindow):
-    def __init__(self, port, replay=None, baud=BAUD):
+    def __init__(self, port, replay=None, baud=BAUD, link=None, R=None):
         super().__init__()
-        self.setWindowTitle("ESP32 Sensor Dashboard" + (" - replay" if replay else ""))
+        self.setWindowTitle("ESP32 Sensor Dashboard" + (" - replay" if replay else "")
+                            + (" - WiFi" if link else ""))
         self.port = port
         self.replay = replay
         self.baud = baud
+        self.link = link                    # WifiLink, or None for serial / replay
+        self.R = R                          # IMU -> aircraft rotation from a calibration, or None
+        self.logger = None                  # last #STATUS from the logger
+        self.logger_t = 0.0
+        self.logger_note = ""
+        self.logger_shown = None
+        self.wizard = None
         self.ser = None
         self.rx = bytearray()
         self.buf = np.full((BUF_N, len(COLS)), np.nan)
@@ -550,8 +989,33 @@ class Dashboard(QtWidgets.QMainWindow):
         self.status = QtWidgets.QLabel("")
         self.status.setStyleSheet("color:#8b93a1;font-size:12px;")
         bar.addWidget(self.status)
+        if self.link is not None:
+            outer.addLayout(self.build_logger_bar(btn_css))
         outer.addLayout(bar)
         self.build_path_tab(btn_css)
+
+    def build_logger_bar(self, btn_css):
+        """WiFi mode: logger state and its controls."""
+        bar = QtWidgets.QHBoxLayout()
+        self.rec = QtWidgets.QLabel("")
+        self.sensors = QtWidgets.QLabel("")
+        self.sensors.setStyleSheet("color:#8b93a1;font-size:12px;")
+        self.note = QtWidgets.QLabel("")
+        self.note.setStyleSheet("color:#ffb347;font-size:12px;")
+        for w in (self.rec, self.sensors, self.note):
+            bar.addWidget(w)
+            bar.addSpacing(16)
+        bar.addStretch(1)
+        self.logger_btns = []
+        for text, fn in (("Start new log", self.start_log),
+                         ("Calibrate IMU...", self.open_wizard),
+                         ("Turn WiFi off...", self.wifi_off)):
+            b = QtWidgets.QPushButton(text)
+            b.setStyleSheet(btn_css)
+            b.clicked.connect(fn)
+            bar.addWidget(b)
+            self.logger_btns.append(b)
+        return bar
 
     def build_path_tab(self, btn_css):
         """Estimated 3D flight path: dead reckoning from airspeed + heading, baro altitude."""
@@ -606,6 +1070,47 @@ class Dashboard(QtWidgets.QMainWindow):
         lay.addWidget(panel)
 
     # ---------- Actions ----------
+    def start_log(self):
+        """Every press closes the open log and starts the next log_NNN.csv."""
+        self.logger_note = "" if self.link.send("LOG") else "Not connected"
+
+    def open_wizard(self):
+        if self.wizard is None or not self.wizard.isVisible():
+            self.wizard = CalWizard(self)
+        self.wizard.show()
+        self.wizard.raise_()
+
+    def wifi_off(self):
+        recording = self.logger_fresh() and self.logger["log"]
+        text = ("Turn the logger's WiFi off to save power?\n\nYou cannot start a new log or "
+                "calibrate again until the logger is power-cycled. A log that is recording "
+                "keeps recording.")
+        if not recording:
+            text += "\n\nWARNING: no log is recording. Start one first unless you mean this."
+        buttons = QtWidgets.QMessageBox.StandardButton
+        if QtWidgets.QMessageBox.question(self, "Turn WiFi off", text, buttons.Yes | buttons.No,
+                                          buttons.No) != buttons.Yes:
+            return
+        if self.link.send("WIFI,OFF"):
+            self.link.stop()
+            self.logger_note = "WiFi turned off: power-cycle the logger to reconnect"
+        else:
+            self.logger_note = "Not connected, so WiFi was not turned off"
+
+    def apply_rotation(self, R):
+        """Draw the aircraft in aircraft axes from now on (after a calibration)."""
+        self.R = R
+        self.off = [0.0, 0.0, 0.0]
+        self.start_cal()                    # the gyro bias was in the old axes
+
+    def to_body(self, x, y, z):
+        if self.R is not None:
+            return tuple(float(v) for v in self.R @ (x, y, z))
+        return remap(x, y, z)
+
+    def logger_fresh(self):
+        return self.logger is not None and time.time() - self.logger_t < STATUS_STALE_S
+
     def zero_attitude(self):
         self.off = [math.degrees(self.att.roll), math.degrees(self.att.pitch), math.degrees(self.att.yaw)]
 
@@ -664,15 +1169,51 @@ class Dashboard(QtWidgets.QMainWindow):
                 self.ser.close()
         except Exception:
             pass
+        if self.link is not None:
+            self.link.close()               # the logger's WiFi stays on
         super().closeEvent(e)
 
     # ---------- Data ----------
     def tick(self):
         if self.replay is not None:
             self.handle_rows(self.replay.due())
+        elif self.link is not None:
+            self.poll_wifi()
         else:
             self.poll_serial()
         self.render()
+
+    def poll_wifi(self):
+        rows = []
+        for line in self.link.lines():
+            text = line.decode("ascii", "ignore").strip()
+            if text.startswith("#"):
+                self.handle_logger_message(text[1:].split(","))
+            else:
+                r = parse(line)
+                if r is not None:
+                    rows.append(r)
+        self.handle_rows(rows)
+
+    def handle_logger_message(self, parts):
+        """A '#' line from the logger, without the '#', split on commas."""
+        kind = parts[0]
+        if kind == "STATUS" and len(parts) >= 8:
+            on = [p == "1" for p in parts[3:8]]
+            self.logger = {"log": None if parts[2] == "-" else parts[2], "sd": on[0],
+                           "sensors": dict(zip(("IMU", "airspeed", "baro", "power"), on[1:]))}
+            self.logger_t = time.time()
+        elif kind in ("CAL", "CALSAVED") or parts[:2] == ["ERR", "CAL"]:
+            if self.wizard is not None:
+                self.wizard.on_message(parts)
+        elif kind == "LOG" and len(parts) >= 2:
+            self.logger_note = f"Started {parts[1]}"
+            if self.logger is not None:
+                self.logger["log"] = parts[1]
+        elif kind == "ERR":
+            self.logger_note = "Logger: " + ",".join(parts[1:])
+        elif kind == "WIFI":
+            self.logger_note = "WiFi turned off: power-cycle the logger to reconnect"
 
     def poll_serial(self):
         now = time.time()
@@ -720,8 +1261,8 @@ class Dashboard(QtWidgets.QMainWindow):
         self.latest = r
         self.last_rx = time.time()
         self.rate_count += 1
-        a = remap(r[I["ax_g"]], r[I["ay_g"]], r[I["az_g"]])
-        g = remap(r[I["gx_dps"]], r[I["gy_dps"]], r[I["gz_dps"]])
+        a = self.to_body(r[I["ax_g"]], r[I["ay_g"]], r[I["az_g"]])
+        g = self.to_body(r[I["gx_dps"]], r[I["gy_dps"]], r[I["gz_dps"]])
         if not all(math.isfinite(v) for v in (*a, *g)):
             return
         dt = 0.02 if self.last_t is None else (r[0] - self.last_t) / 1000.0
@@ -789,8 +1330,19 @@ class Dashboard(QtWidgets.QMainWindow):
         if now - self.rate_t >= 1.0:
             self.rate = self.rate_count / (now - self.rate_t)
             self.rate_count, self.rate_t = 0, now
+        if self.link is not None:
+            self.render_logger_bar()
         if self.replay is not None:
             msg, receiving = self.replay.status(), not self.replay.done()
+        elif self.link is not None:
+            if self.link.stopped:
+                msg, receiving = "WiFi off", False
+            elif not self.link.connected:
+                msg, receiving = f"Connecting to {self.link.host}:{self.link.port} ...", False
+            elif now - self.last_rx > 1.0:
+                msg, receiving = f"{self.link.host}: connected, no data", False
+            else:
+                msg, receiving = f"WiFi {self.link.host}   |   {self.rate:.0f} Hz", True
         elif self.ser is None:
             msg, receiving = f"Waiting for {self.port} ...", False
         elif now - self.last_rx > 1.0:
@@ -850,6 +1402,34 @@ class Dashboard(QtWidgets.QMainWindow):
         if self.tabs.currentIndex() == 1:
             self.render_path(roll, pitch, yaw)
 
+    def render_logger_bar(self):
+        link, fresh = self.link, self.logger_fresh()
+        if link.stopped:
+            rec, color = "WiFi OFF", "#8b93a1"
+        elif not link.connected:
+            rec, color = f'Not connected: join WiFi "{WIFI_SSID}"', "#8b93a1"
+        elif not fresh:
+            rec, color = "Connected, waiting for the logger...", "#8b93a1"
+        elif not self.logger["sd"]:
+            rec, color = "NO SD CARD", "#ff5d5d"
+        elif self.logger["log"]:
+            rec, color = f"REC  {self.logger['log']}", "#5dff8a"
+        else:
+            rec, color = "NOT LOGGING", "#ffb347"
+        sensors = ("   ".join(f"{n} {'ok' if ok else 'MISSING'}"
+                              for n, ok in self.logger["sensors"].items()) if fresh else "")
+        usable = link.connected and not link.stopped
+        shown = (rec, color, sensors, self.logger_note, usable)
+        if shown == self.logger_shown:      # restyling every frame is wasted work
+            return
+        self.logger_shown = shown
+        self.rec.setText(rec)
+        self.rec.setStyleSheet(f"color:{color};font-size:15px;font-weight:600;")
+        self.sensors.setText(sensors)
+        self.note.setText(self.logger_note)
+        for b in self.logger_btns:
+            b.setEnabled(usable)
+
     def render_path(self, roll, pitch, yaw):
         if self.path_dirty:
             self.path_dirty = False
@@ -878,7 +1458,26 @@ def main():
                     help="play back an SD card log; a bare name is looked up in logs/, "
                          "no name plays the newest log there")
     ap.add_argument("--speed", type=float, default=1.0, help="replay speed multiplier (default 1)")
+    ap.add_argument("--wifi", nargs="?", const=WIFI_HOST, metavar="HOST",
+                    help=f'connect over the logger\'s WiFi (join "{WIFI_SSID}" first; '
+                         f"default address {WIFI_HOST}), with logging and calibration controls")
+    ap.add_argument("--cal", metavar="TXT",
+                    help="a cal_NNN.txt from the SD card (bare names are looked up in logs/): "
+                         "draw the aircraft using that IMU mounting calibration")
     args = ap.parse_args()
+    if args.wifi and (args.replay is not None or args.port):
+        sys.exit("--wifi cannot be combined with a serial port or --replay")
+
+    R = None
+    if args.cal:
+        path = Path(args.cal)
+        if not path.exists() and (LOG_DIR / path).exists():
+            path = LOG_DIR / path
+        try:
+            R = rotation_from_cal_file(path)
+        except (OSError, KeyError, ValueError) as e:
+            sys.exit(f"Cannot use calibration {args.cal}: {e}")
+        print(f"Using IMU mounting from {path.name}:\n{describe_mount(R)}")
 
     replay = None
     if args.replay is not None:
@@ -890,7 +1489,10 @@ def main():
     # Two 3D views (Live and 3D path) need one shared GL context, or their shaders fail to draw.
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = pg.mkQApp("ESP32 Dashboard")
-    win = Dashboard(None if replay else find_port(args.port), replay, args.baud)
+    if args.wifi:
+        win = Dashboard(None, link=WifiLink(args.wifi), R=R)
+    else:
+        win = Dashboard(None if replay else find_port(args.port), replay, args.baud, R=R)
     win.resize(1500, 900)
     win.show()
     pg.exec()

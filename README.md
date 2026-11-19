@@ -4,8 +4,11 @@ Design of black box and live telemetry system for micro and regular class plane 
 See [the firmware guide](telem_v1/README.md) for the native ESP-IDF logger,
 device modules, preserved pin assignments, and ESP32 build instructions.
 
-`ground_station/dashboard.py` is a laptop-side live dashboard that reads the
-logger's CSV lines over USB serial. From `ground_station/`, run
+`ground_station/dashboard.py` is a laptop-side live dashboard for the logger's CSV lines.
+The logger does not log at power-on. At the field, join the logger's `blackbox` WiFi and
+run `uv run dashboard.py --wifi` from `ground_station/` to start logs, calibrate the IMU
+mounting and turn the WiFi off before flight (see the
+[firmware guide](telem_v1/README.md#field-setup-over-wifi)). Over USB serial, run
 `uv run dashboard.py` (or pass the port, e.g. `uv run dashboard.py COM5`).
 `uv run dashboard.py --replay log_007.csv` plays back an SD card log instead; copy
 logs into `ground_station/logs/`. Through the telemetry radio, pass the ground

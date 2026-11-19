@@ -12,7 +12,11 @@ The matching `.c`/`.h` pairs in `main/` handle:
   zeroed or calibrated) and the sensor temperature.
 - `bme680`: temperature, humidity, pressure and altitude relative to startup,
   probing 0x77 then 0x76. Altitude uses the same pressure sample as the CSV row.
-- `sdcard`: FAT-formatted SD card over SPI, CSV file creation and periodic sync.
+- `sdcard`: FAT-formatted SD card over SPI. Starts a new `log_NNN.csv` on command,
+  syncs it about once a second, and writes `cal_NNN.txt` calibration files.
+- `wifilink`: the logger's own WiFi network and a TCP link to the laptop (see
+  [Field setup over WiFi](#field-setup-over-wifi)).
+- `imucal`: averages the raw IMU over the two still poses of the mounting calibration.
 - `power`: battery voltage (GPIO36) and current (GPIO39) on ADC1. The logger calls
   `powerRead()` once per row and writes the instantaneous pin signal in millivolts
   (converted with the chip's eFuse ADC calibration) and the raw 12-bit ADC counts.
@@ -43,6 +47,36 @@ logger. If a sensor is unreliable, drop the I2C devices back to 100 kHz. These
 assignments still need checking against the physical board and wiring before
 hardware testing.
 
+### Field setup over WiFi
+
+The logger does **not** log at power-on. On reset it starts its own WiFi network
+(`blackbox`, password and channel in `main/wifilink.h`) and waits. On the laptop, join that
+network, then from `ground_station/` run `uv run dashboard.py --wifi`. The window shows the
+live data with the usual diagrams, plus a logger bar:
+
+- **Start new log**: closes the open log, if any, and starts the next `log_NNN.csv`. Press
+  it again after a false start; the earlier file is kept. A log keeps recording until power
+  is cut, and at most about the last second is lost.
+- **Calibrate IMU...**: a wizard. Hold the aircraft level and still, then nose up (about
+  30-45 degrees, wings level), then type the IMU's position from the CG in cm (x forward,
+  y toward the left wing, z up). The logger averages the raw IMU over 60 rows (3 s) per
+  pose and saves both poses and the offset to the next `cal_NNN.txt`. The dashboard works
+  out the mount rotation, which may be at any angle, and checks that each pose was held
+  still and that the nose was raised at least 15 degrees.
+- **Turn WiFi off...**: after a confirmation, turns the logger's WiFi off to save power,
+  until it is power-cycled. A recording log carries on. Only this button turns WiFi off: if
+  the laptop drops out of range or the dashboard closes, WiFi stays on and the dashboard
+  reconnects.
+
+The bar shows whether a log is recording, the SD card and which sensors are working, from a
+status line the logger sends every second. If WiFi cannot start at boot, the logger starts a
+log on its own, since nothing else could (`LOG_IF_WIFI_FAILS` in `main.c`).
+
+The link is text lines over TCP port 3333 at 192.168.4.1. The logger sends every CSV row,
+plus lines starting with `#` (status, replies and errors). The commands are listed in
+`main/wifilink.h`. To replay a log in aircraft axes, pass its calibration:
+`uv run dashboard.py --replay log_004.csv --cal cal_002.txt`.
+
 ### Raw logging; calibration on the ground station
 
 The logger records raw sensor values, and `ground_station/dashboard.py` applies the
@@ -53,8 +87,8 @@ the sensor conversions that need data the ground never sees: the MS4525DO counts
 (assuming a -1 to +1 psi sensor) with up to 8 fresh readings averaged within 8 ms per
 loop, and ADC counts to millivolts using the chip's eFuse calibration.
 
-The dashboard zeroes the airspeed from the first 40 rows (about 2 s) of a log, so
-after power-on keep the board still, and leave the pitot open but out of any draft.
+On replay the dashboard zeroes the airspeed from the first 40 rows (about 2 s) of a log,
+so for 2 s after pressing **Start new log** leave the pitot open but out of any draft.
 Do not cover it: that creates a pressure transient, not a true zero. Live, the zero is
 taken when the dashboard connects or when **A** is pressed. The dashboard shows the
 zero offset and its noise, and warns above 1.5 Pa rms. After the zero it applies a
@@ -80,9 +114,14 @@ Their columns are `t_ms`, `alt_m`, `press_hpa`, `bme_temp_c`, `hum_pct`, `dp_raw
 (Pa, not zeroed), `pitot_temp_c`, `ax_g`/`ay_g`/`az_g`, `gx_dps`/`gy_dps`/`gz_dps`,
 `batt_v_sig_mv` and `batt_a_sig_mv` (pin signal, mV), and `batt_v_adc` and
 `batt_a_adc` (raw ADC counts). Logs from older firmware have calibrated `dp_pa`,
-`airspeed_ms`, `batt_v` and `batt_a` columns instead; the dashboard reads both. If all filenames are used,
-SD logging is disabled; existing files are kept. Mount failures never trigger
-formatting, and write/sync failures stop SD logging while console output continues.
+`airspeed_ms`, `batt_v` and `batt_a` columns instead; the dashboard reads both. If all
+filenames are used, a new log cannot start; existing files are kept. Mount failures never
+trigger formatting, and the mount is retried when a log is started. A write/sync failure
+stops that log, the laptop is told, and console output continues.
+
+`cal_NNN.txt` files are `key,values` lines: the time and the log that was recording, then
+for each pose (`level`, `pitch`) the sample count and the means and standard deviations
+of the raw accelerometer (g) and gyro (deg/s) axes, and `r_imu_from_cg_cm`.
 
 ## Build
 

@@ -63,6 +63,7 @@ PORT = None            # None = auto-detect (or pass as command-line argument)
 BAUD = 115200          # USB console baud (ESP-IDF default); the radio uses 57600 via --baud
 LOG_DIR = Path(__file__).parent / "logs"   # where --replay looks for SD card logs
 HISTORY_S = 20         # seconds of history shown in the plots
+PLOT_AXIS_W = 64       # y-axis width (px) shared by all plots so their time axes line up
 BUF_N = 3000           # samples kept in memory
 FRAME_MS = 16          # UI refresh (~60 fps)
 
@@ -954,6 +955,12 @@ class Dashboard(QtWidgets.QMainWindow):
             p = gw.addPlot(title=title)
             p.showGrid(x=True, y=True, alpha=0.2)
             p.setLabel("left", unit)
+            # Same y-axis width on every plot so the linked time axes line up at any window size;
+            # no SI prefix, so altitude stays in m rather than "m (x0.001)".
+            left_axis = p.getAxis("left")
+            left_axis.setWidth(PLOT_AXIS_W)
+            left_axis.enableAutoSIPrefix(False)
+            p.getAxis("bottom").setTickSpacing(5, 1)   # labels every 5 s on every plot
             p.setXRange(-HISTORY_S, 0, padding=0)
             p.disableAutoRange(pg.ViewBox.XAxis)
             if first is None:
